@@ -5,8 +5,9 @@ import plotly.express as px
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
-# הנתיב הקבוע לקובץ במחשב שלך
-FILE_PATH = "C:/Users/oram1003/Desktop/mrp_2.xlsx"
+# כאן אתה מגדיר את הנתיב הקבוע לקובץ במחשב שלך
+# שים לב להשתמש בלוכסנים קדמיים (/) או בלוכסן כפול (\\)
+FILE_PATH = "mrp_2.xlsx" # לדוגמה: "C:/Users/YourName/Documents/mrp_2.xlsx"
 
 st.set_page_config(
     page_title="MRP Control Tower",
