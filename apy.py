@@ -95,8 +95,8 @@ if uploaded_file is None:
 # LOAD FILE
 # ==========================================================
 try:
-    # התיקון בוצע כאן: הוספת header=2 כדי לדלג על שתי השורות הראשונות
-    df = pd.read_excel(uploaded_file, header=2)
+    # הקוד קורא עכשיו מהשורה ה-30 (אינדקס 29)
+    df = pd.read_excel(uploaded_file, header=29)
 except Exception as e:
     st.error(str(e))
     st.stop()
@@ -168,7 +168,7 @@ if len(shortage_df):
     fig = px.bar(
         heat_df.head(20),
         x="Shortage",
-        y=heat_df.columns[0],
+        y=heat_df.columns[1], # שימוש בעמודת המקט (PN_ID) אם היא השנייה, למניעת בעיות תצוגה
         orientation="h",
         color="Shortage",
         color_continuous_scale="Reds"
