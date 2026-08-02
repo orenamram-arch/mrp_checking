@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build מדויקת")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build מבוססת ETA מדויק")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -100,7 +100,7 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
     conn.execute("""
     INSERT INTO inventory_history (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
+    """, (pn, added_stock, added_stock, eta, status, supplier, comment, updated_by, now_str))
     
     conn.commit()
     
@@ -260,7 +260,7 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר א
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Single Source of Truth)
+# CORE LOGIC FOR SHORTAGES
 # ==========================================================
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
 for idx, row in df.iterrows():
@@ -380,7 +380,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מציגה ישירות מתוך טבלת החוסרים המאומתת את הרכיבים שגורמים לגירעון בכל הרכבה. הפריט הקריטי ביותר מודגש בגרסה זו ב-**BOLD**.")
+    st.markdown("המערכת שולפת אוטומטית את ה-ETA האמיתי מתוך מסד הנתונים (כמו ספטמבר 2026), מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -398,7 +398,6 @@ with tab2:
             
         planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
         
-        # סינון חוסרים ששייכים אך ורק להרכבה זו מתוך טבלת החוסרים הראשית (breakdown_df)
         asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
 
         missing_items_details = []
@@ -407,15 +406,24 @@ with tab2:
             c_desc = str(s_row["Description"]).strip()
             s_qty = s_row["Total_MRP_Shortage"]
             
+            # שליפת ה-ETA המדויק מבסיס הנתונים המקומי (לדוגמה ספטמבר 2026)
             _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
-            try:
-                eta_dt = pd.to_datetime(eta_val).date() if eta_val else date(2099, 12, 31)
-            except:
+            
+            # המרת ETA לתאריך לצורך השוואת קריטיות (אם אין ETA כלל, מקבל ערך רחוק מאוד 2099)
+            if eta_val and str(eta_val).strip() not in ["", "None", "NaT"]:
+                try:
+                    eta_dt = pd.to_datetime(eta_val).date()
+                    eta_display_str = str(eta_val)
+                except:
+                    eta_dt = date(2099, 12, 31)
+                    eta_display_str = "ללא ETA"
+            else:
                 eta_dt = date(2099, 12, 31)
+                eta_display_str = "ללא ETA"
 
-            missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_val))
+            missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
 
-        # מציאת הפריט הקריטי ביותר (ללא ETA או ETA מאוחר ביותר)
+        # מציאת הפריט הקריטי ביותר (חסר ETA או בעל תאריך האספקה המאוחר ביותר)
         if missing_items_details:
             missing_items_details.sort(key=lambda x: x[3], reverse=True)
             most_critical_pn = missing_items_details[0][0]
@@ -424,7 +432,7 @@ with tab2:
 
         formatted_missing = []
         for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-            eta_str = f" [ETA: {raw_eta}]" if raw_eta else " [ללא ETA]"
+            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "ללא ETA" else " [ללא ETA]"
             item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
             
             if c_pn == most_critical_pn:
