@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה סופית: חיבור ל-Supabase בענן עם טבלה נפרדת (mrp_app_data).
+גרסה מותאמת ומהירה: שליפת נתונים מרוכזת מ-Supabase (במקום פניות בודדות) למניעת איטיות.
 
 הרצה:
 streamlit run mrp_app.py
@@ -34,10 +34,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚀 MRP Executive Control Tower & Decision Hub")
-st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהולית (Executive Summary) מסונכרנת לענן")
+st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהולית (Executive Summary) מסונכרנת לענן במהירות שיא")
 
 # ==========================================================
-# SUPABASE SETUP (Cloud Persistent Storage)
+# SUPABASE SETUP & FAST CACHED STORAGE
 # ==========================================================
 SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
 SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
@@ -48,36 +48,46 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
-def ensure_mrp_tables():
-    """מוודא שהטבלאות קיימות ב-Supabase (באמצעות פונקציות RPC או שאילתות בסיסיות)"""
+@st.cache_data(ttl=5) # שומר את הנתונים בזיכרון המטמון ל-5 שניות כדי למנוע קריאות מיותרות לענן
+def fetch_all_inventory_records():
+    """שולף את כל הטבלה מהענן בפעימה אחת כדי שהאפליקציה תרוץ במהירות מקסימלית"""
     try:
-        # בדיקה האם הטבלה קיימת על ידי ניסיון שליפה
-        supabase.table("mrp_inventory_updates").select("pn", count="exact").limit(1).execute()
+        response = supabase.table("mrp_inventory_updates").select("*").execute()
+        records = {}
+        if response.data:
+            for row in response.data:
+                pn = str(row.get("pn")).strip()
+                eta_val = row.get("eta", "")
+                if not eta_val or str(eta_val).strip() in ["", "None", "NaT", "nan"]:
+                    eta_val = ""
+                status_val = row.get("status", "פתוח") or "פתוח"
+                records[pn] = {
+                    "added_stock": float(row.get("added_stock", 0.0) or 0.0),
+                    "eta": eta_val,
+                    "status": status_val,
+                    "supplier": row.get("supplier", "אופק"),
+                    "comment": row.get("comment", ""),
+                    "updated_by": row.get("updated_by", ""),
+                    "updated_at": row.get("updated_at", "")
+                }
+        return records
     except Exception:
-        pass
-
-ensure_mrp_tables()
+        return {}
 
 def get_inventory_record(pn):
-    try:
-        response = supabase.table("mrp_inventory_updates").select("*").eq("pn", str(pn)).execute()
-        if response.data and len(response.data) > 0:
-            res = response.data[0]
-            eta_val = res.get("eta", "")
-            if not eta_val or str(eta_val).strip() in ["", "None", "NaT", "nan"]:
-                eta_val = ""
-            status_val = res.get("status", "פתוח") or "פתוח"
-            return (
-                float(res.get("added_stock", 0.0) or 0.0),
-                eta_val,
-                status_val,
-                res.get("supplier", "אופק"),
-                res.get("comment", ""),
-                res.get("updated_by", ""),
-                res.get("updated_at", "")
-            )
-    except Exception as e:
-        pass
+    """שולף רשומה מתוך ה-Cache המהיר במקום לשלוח בקשה חדשה לענן בכל פעם"""
+    all_recs = fetch_all_inventory_records()
+    res = all_recs.get(str(pn).strip())
+    if res:
+        return (
+            res["added_stock"],
+            res["eta"],
+            res["status"],
+            res["supplier"],
+            res["comment"],
+            res["updated_by"],
+            res["updated_at"]
+        )
     return 0.0, "", "פתוח", "אופק", "", "", ""
 
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
@@ -93,11 +103,10 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
         "updated_at": now_str
     }
     try:
-        # שמירה או עדכון בטבלת העדכונים הפעילים
         supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
-        
-        # שמירה בהיסטוריה
         supabase.table("mrp_inventory_history").insert(payload).execute()
+        # ניקוי ה-Cache כדי שהנתונים החדשים יופיעו מיד
+        fetch_all_inventory_records.clear()
     except Exception as e:
         st.error(f"שגיאה בשמירה ל-Supabase: {e}")
     
@@ -111,6 +120,7 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
 def delete_inventory_record(pn):
     try:
         supabase.table("mrp_inventory_updates").delete().eq("pn", str(pn)).execute()
+        fetch_all_inventory_records.clear()
     except Exception as e:
         st.error(f"שגיאה במחיקה מ-Supabase: {e}")
 
@@ -596,7 +606,7 @@ with tab4:
 
 with tab5:
     st.subheader("📅 עדכון מלאי וסטטוס (שמירה קבועה בענן)")
-    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים ב-Supabase ותשפיע על החישובים הרוחביים.**")
+    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים בענן ותשפיע מיידית על כל החישובים.**")
     
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()))
     
@@ -623,9 +633,9 @@ with tab5:
                 updated_by = st.text_input("עודכן ע\"י", value=saved_by)
             comment = st.text_area("הערות", value=saved_comment)
             
-            if st.form_submit_button("שמור עדכון קבוע במערכת"):
+            if st.form_submit_button("שמור עדכון קבוע בענן"):
                 save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
-                st.success(f"העדכון למק\"ט {selected_pn} נשמר באופן קבוע בענן Supabase!")
+                st.success(f"העדכון למק\"ט {selected_pn} נשמר בהצלחה בענן!")
                 st.rerun()
 
 with tab6:
