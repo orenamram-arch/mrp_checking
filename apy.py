@@ -95,7 +95,8 @@ if uploaded_file is None:
 # LOAD FILE
 # ==========================================================
 try:
-    df = pd.read_excel(uploaded_file)
+    # התיקון בוצע כאן: הוספת header=2 כדי לדלג על שתי השורות הראשונות
+    df = pd.read_excel(uploaded_file, header=2)
 except Exception as e:
     st.error(str(e))
     st.stop()
