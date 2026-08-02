@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה המבוססת במדויק על לוגיקת המקור של המשתמש + שילוב לשוניות What-If, CTB ו-Kanban.
+גרסה סופית: הפרדה מוחלטת בין סימולציה רגעית (What-If) לבין עדכון מלאי קבוע ב-DB.
 
 הרצה:
 streamlit run mrp_app.py
@@ -28,7 +28,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS להתאמה למצב Dark/Light ולעיצוב נקי
 st.markdown("""
 <style>
 .stMetric { border: 1px solid rgba(128,128,128,0.2); border-radius: 8px; padding: 10px; }
@@ -185,25 +184,18 @@ for col in valid_assemblies:
     except:
         assembly_levels[col] = 0
 
-asm_components = {}
-for col in valid_assemblies:
-    asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
-
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
 def get_first_supply_eta(pn):
-    # 1. קודם כל נבדוק אם יש עדכון ידני בבסיס הנתונים המקומי
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
         
-    # 2. אם אין עדכון ידני, נחפש את שורת הפריט בטבלה הגולמית
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
         
-        # נסרוק את כל עמודות האספקה החל מעמודה 50 ועד הסוף כדי לא לפספס כלום
         for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
@@ -213,25 +205,12 @@ def get_first_supply_eta(pn):
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
                             dt = pd.to_datetime(date_val, errors='coerce')
-                            if pd.notnull(dt):
-                                # בדיקה האם התאריך הגיוני (משנת 2024 ומעלה)
-                                if dt.year >= 2024:
-                                    return dt.strftime("%Y-%m")
+                            if pd.notnull(dt) and dt.year >= 2024:
+                                return dt.strftime("%Y-%m")
             except:
                 pass
                 
-    # אם באמת אין שום תאריך באקסל, נחזיר מחרוזת ריקה במקום "ללא ETA" כדי שלא יופיע מיותר
     return "בדיקה נדרשת"
-
-# ==========================================================
-# APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
-# ==========================================================
-for idx, row in df.iterrows():
-    pn = str(row[PN_COL]).strip()
-    saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
-    if saved_stock_add > 0:
-        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
-        df.at[idx, STOCK_COL] = base_stock + saved_stock_add
 
 # ==========================================================
 # SIDEBAR FILTERS & WHAT-IF CONTROLS
@@ -292,28 +271,40 @@ item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק\"ט/תיאור)", item_choices)
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
+
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (WRAPPED IN FUNCTION FOR WHAT-IF)
+# CORE LOGIC FOR SHORTAGES (WRAPPED IN FUNCTION)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None):
+    """
+    מחשב את טבלת החוסרים. 
+    אם מקבל sim_extra_stock, החישוב מתבצע In-Memory לצרכי סימולציה רגעית בלבד.
+    בכל מקרה הוא מושך את העדכונים הקבועים שנשמרו ב-DB.
+    """
     if sim_extra_stock is None:
         sim_extra_stock = {}
         
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
     
-    # Apply simulated stock
+    # 1. עיבוד המאזן השלילי: הוספת מלאי שמור מה-DB + מלאי סימולציה רגעי
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
+        
+        # המלאי הקבוע שנשמר למסד הנתונים
+        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
+        
+        # המלאי המדומיין (אם אנחנו רצים מתוך לשונית What-If)
         sim_val = sim_extra_stock.get(pn, 0.0)
         
-        # Already applied real saved_stock in main loop, here we only add What-If stock
-        if sim_val > 0:
+        total_added_stock = saved_stock_add + sim_val
+        
+        if total_added_stock > 0:
             current_bal = temp_df.at[idx, 'Monthly_Balance']
             if current_bal < 0:
-                temp_df.at[idx, 'Monthly_Balance'] = current_bal + sim_val
+                temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
-    # Exact logic provided by user
+    # 2. חיתוך וחישוב חוסרים
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
@@ -325,7 +316,11 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
         pn = str(row[PN_COL]).strip()
         desc = str(row[DESC_COL])
         item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
-        stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+        
+        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
+        stock = base_stock + saved_stock_add + sim_extra_stock.get(pn, 0.0)
+        
         total_mrp_shortage = row['Total_MRP_Shortage']
         
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn)
@@ -365,7 +360,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             
     return res_df
 
-# מחשב את הנתונים הנוכחיים להצגה
+# מחשב את הנתונים הקבועים (ללא סימולציה) עבור רוב האפליקציה
 breakdown_df = calculate_mrp_breakdown()
 
 # ==========================================================
@@ -417,6 +412,15 @@ with tab1:
                         m_dt = pd.to_datetime(m_col)
                         m_ym = m_dt.strftime("%Y-%m")
                         temp_b = pd.to_numeric(df[m_col], errors='coerce').fillna(0)
+                        
+                        for idx_temp, row_temp in df.iterrows():
+                            pn_temp = str(row_temp[PN_COL]).strip()
+                            saved_stk, _, _, _, _, _, _ = get_inventory_record(pn_temp)
+                            if saved_stk > 0:
+                                val_temp = temp_b.loc[idx_temp]
+                                if val_temp < 0:
+                                    temp_b.loc[idx_temp] = val_temp + saved_stk
+                                    
                         tot_sh = temp_b[temp_b < 0].abs().sum()
                         trend_rows.append({"Month": m_ym, "Total_Shortage": tot_sh})
                     except:
@@ -528,7 +532,7 @@ with tab2:
 
 with tab3:
     st.subheader("💡 סימולציית What-If (מה יקרה אם...)")
-    st.markdown("כלי אינטראקטיבי לקבלת החלטות: בדוק כיצד הוספת מלאי או הקדמת אספקה משחררת את קווי הייצור בזמן אמת בישיבה.")
+    st.markdown("כלי אינטראקטיבי לבחינת תרחישים. **שימו לב: תוספת מלאי בלשונית זו מחושבת באופן רגעי ואינה נשמרת בבסיס הנתונים.**")
     
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -537,14 +541,14 @@ with tab3:
         sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי לצורך סימולציה", min_value=0.0, value=10.0, step=1.0)
 
     if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
-        # חישוב תוצאת הסימולציה מול המצב הקיים
+        # הרצת חישוב נפרד רגעי (In-Memory) ללא שמירה ל-DB
         sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock})
         
         orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
         sim_blocked = set(sim_df['Assembly'].unique()) if not sim_df.empty else set()
         freed_assemblies = orig_blocked - sim_blocked
         
-        st.success(f"סימולציה הופעלה בהצלחה עבור מק\"ט `{sim_pn}` עם תוספת של {sim_extra_stock} יחידות.")
+        st.success(f"סימולציה הופעלה בהצלחה עבור מק\"ט `{sim_pn}` עם תוספת מדומיינת של {sim_extra_stock} יחידות.")
         
         st.divider()
         col_res1, col_res2 = st.columns(2)
@@ -577,7 +581,6 @@ with tab4:
     with k_col1:
         st.markdown("### 📝 פתוח לטיפול")
         open_items = breakdown_df[breakdown_df["Status"] == "פתוח"] if not breakdown_df.empty else pd.DataFrame()
-        # קיבוץ לפי מק"ט למניעת כפילויות בלוח הקנבן
         if not open_items.empty: open_items = open_items.drop_duplicates(subset=["PN"])
         for _, r in open_items.head(5).iterrows():
             st.warning(f"**{r['PN']}**\n\n{r['Description'][:20]}")
@@ -601,7 +604,9 @@ with tab4:
             st.success(f"**{r['PN']}** (התקבל)")
 
 with tab5:
-    st.subheader("📅 עדכון מלאי, ETA וקבלני משנה")
+    st.subheader("📅 עדכון מלאי וסטטוס (שמירה קבועה)")
+    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים ותשפיע על החישובים הרוחביים.**")
+    
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()))
     
     if selected_pn != "הכל":
@@ -609,7 +614,7 @@ with tab5:
         with st.form("inventory_form"):
             col_f1, col_f2, col_f3 = st.columns(3)
             with col_f1:
-                added_stock_input = st.number_input("תוספת למלאי זמין", min_value=0.0, value=float(saved_stock), step=1.0)
+                added_stock_input = st.number_input("תוספת למלאי זמין (קבוע)", min_value=0.0, value=float(saved_stock), step=1.0)
             with col_f2:
                 try: parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else date.today()
                 except: parsed_eta = date.today()
@@ -626,9 +631,11 @@ with tab5:
             with col_f5:
                 updated_by = st.text_input("עודכן ע\"י", value=saved_by)
             comment = st.text_area("הערות", value=saved_comment)
-            if st.form_submit_button("שמור עדכון"):
+            
+            if st.form_submit_button("שמור עדכון קבוע במערכת"):
+                # כאן מתבצעת כתיבה פיזית לבסיס הנתונים (SQL)
                 save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
-                st.success("נשמר בהצלחה!")
+                st.success(f"העדכון למק\"ט {selected_pn} נשמר באופן קבוע בבסיס הנתונים!")
                 st.rerun()
 
 with tab6:
@@ -649,10 +656,10 @@ with tab6:
                     st.text(f"תוספת: {i_stock} | ETA: {i_eta}")
                     st.text(f"עודכן ע\"י: {i_by} ({i_time})")
                 with col_u3:
-                    if st.button("🔄 UNDO", key=f"undo_{i_pn}"):
+                    if st.button("🔄 בטל שמירה (UNDO)", key=f"undo_{i_pn}"):
                         delete_inventory_record(i_pn)
-                        st.success("בוטל בהצלחה!")
+                        st.success("המידע נמחק לצמיתות מבסיס הנתונים.")
                         st.rerun()
                 st.divider()
     else:
-        st.info("אין עדכונים במערכת.")
+        st.info("אין עדכונים קבועים במערכת כרגע.")
