@@ -85,7 +85,9 @@ def get_inventory_record(pn):
         cur.execute("SELECT added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates WHERE pn = ?", (pn,))
         res = cur.fetchone()
         if res:
-            return res[0], res[1], res[2], res[3], res[4], res[5], res[6]
+            # וידוא ששדה ה-ETA לא ריק או מוגדר כמחרוזת ריקה/null
+            eta_val = res[1] if res[1] and str(res[1]).strip() not in ["", "None", "NaT", "nan"] else ""
+            return res[0], eta_val, res[2], res[3], res[4], res[5], res[6]
     except:
         pass
     return 0.0, "", "פתוח", "אופק", "", "", ""
@@ -100,7 +102,7 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
     conn.execute("""
     INSERT INTO inventory_history (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pn, added_stock, added_stock, eta, status, supplier, comment, updated_by, now_str))
+    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
     
     conn.commit()
     
@@ -380,7 +382,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת שולפת אוטומטית את ה-ETA האמיתי מתוך מסד הנתונים (כמו ספטמבר 2026), מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת שולפת אוטומטית את ה-ETA האמיתי מהמסד נתונים, מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -406,24 +408,22 @@ with tab2:
             c_desc = str(s_row["Description"]).strip()
             s_qty = s_row["Total_MRP_Shortage"]
             
-            # שליפת ה-ETA המדויק מבסיס הנתונים המקומי (לדוגמה ספטמבר 2026)
+            # שליפת ה-ETA האמיתי והמעודכן מבסיס הנתונים המקומי
             _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
             
-            # המרת ETA לתאריך לצורך השוואת קריטיות (אם אין ETA כלל, מקבל ערך רחוק מאוד 2099)
-            if eta_val and str(eta_val).strip() not in ["", "None", "NaT"]:
+            if eta_val and str(eta_val).strip() not in ["", "None", "NaT", "nan"]:
                 try:
                     eta_dt = pd.to_datetime(eta_val).date()
                     eta_display_str = str(eta_val)
                 except:
                     eta_dt = date(2099, 12, 31)
-                    eta_display_str = "ללא ETA"
+                    eta_display_str = str(eta_val)
             else:
                 eta_dt = date(2099, 12, 31)
                 eta_display_str = "ללא ETA"
 
             missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
 
-        # מציאת הפריט הקריטי ביותר (חסר ETA או בעל תאריך האספקה המאוחר ביותר)
         if missing_items_details:
             missing_items_details.sort(key=lambda x: x[3], reverse=True)
             most_critical_pn = missing_items_details[0][0]
