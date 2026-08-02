@@ -6,6 +6,7 @@ from datetime import datetime, date
 import io
 import requests
 import json
+import random
 
 # ==========================================================
 # CONFIGURATION & LOGIN SYSTEM
@@ -14,7 +15,7 @@ GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
-    page_title="MRP Control Tower & Production Plan",
+    page_title="MRP Control Tower & CTB Allocation",
     page_icon="📦",
     layout="wide"
 )
@@ -40,8 +41,8 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("📊 MRP Control Tower & Master Production Schedule")
-st.markdown("ניהול חוסרים דינמי, תוכנית ייצור ממוקדת עם זיהוי פריט קריטי ב-BOLD ותמיכה מלאה בכל חודשי השנה")
+st.title("📊 MRP Control Tower & Smart CTB Allocation Engine")
+st.markdown("ניהול חוסרים דינמי, הקצאת מלאי מדורגת לפי רמות עץ מוצר (BOM Levels) וסימולציית Clear To Build")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -114,22 +115,6 @@ def delete_inventory_record(pn):
     conn.execute("DELETE FROM inventory_updates WHERE pn = ?", (pn,))
     conn.commit()
 
-def eta_color(eta_value):
-    if eta_value in [None, "", "NaT"]:
-        return "⚪"
-    try:
-        eta_date = pd.to_datetime(eta_value).date()
-        days = (eta_date - date.today()).days
-        if days < 0:
-            return "🔴"
-        if days <= 14:
-            return "🟠"
-        if days <= 30:
-            return "🟡"
-        return "🟢"
-    except:
-        return "⚪"
-
 # ==========================================================
 # DATA LOADING FROM GITHUB
 # ==========================================================
@@ -179,7 +164,7 @@ assembly_plan_df = pd.DataFrame(plan_rows)
 
 PN_COL = df.columns[1]     
 DESC_COL = df.columns[4]   
-ITEM_TYPE_COL = df.columns[44] # עמודה AS
+ITEM_TYPE_COL = df.columns[44] 
 STOCK_COL = df.columns[79]     
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist()
@@ -194,6 +179,16 @@ for col in ASSEMBLY_COLS:
             valid_assemblies.append(col)
     except:
         pass
+
+# מיפוי רמות עץ המוצר לכל הרכבה (כדי לתעדף רמות תחתונות)
+assembly_levels = {}
+for col in valid_assemblies:
+    try:
+        col_idx = df.columns.get_loc(col)
+        lvl_val = int(df_levels.iloc[0, col_idx])
+        assembly_levels[col] = lvl_val
+    except:
+        assembly_levels[col] = 0 # ברירת מחדל
 
 asm_components = {}
 for col in valid_assemblies:
@@ -210,7 +205,7 @@ for idx, row in df.iterrows():
         df.at[idx, STOCK_COL] = base_stock + saved_stock_add
 
 # ==========================================================
-# SIDEBAR FILTERS & SMART AUTOCOMPLETE SEARCH
+# SIDEBAR FILTERS
 # ==========================================================
 st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
@@ -223,7 +218,7 @@ for m in MONTH_COLS:
     if pd.notnull(m):
         try:
             dt = pd.to_datetime(m)
-            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)"]] = m
         except:
             month_options[str(m)] = m
 
@@ -266,7 +261,7 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר א
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
-# CORE LOGIC
+# CORE LOGIC FOR SHORTAGES
 # ==========================================================
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
 for idx, row in df.iterrows():
@@ -331,7 +326,7 @@ if not breakdown_df.empty:
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📦 דשבורד חוסרים", 
-    "📊 תוכנית ייצור חודשית (Clear To Build)", 
+    "📊 תוכנית ייצור חודשית (Smart CTB עם תעדוף עץ מוצר)", 
     "⚠️ צווארי בקבוק", 
     "📅 מעקב מלאי וספקים",
     "↩️ ניהול UNDO"
@@ -354,16 +349,26 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP לפי הפילטר הנוכחי!")
 
 with tab2:
-    st.subheader(f"📊 תוכנית ייצור חודשית (Clear To Build) לחודש: {selected_month_label}")
-    st.markdown("המערכת מציגה את **כל** ההרכבות שתוכננו לחודש הנבחר, ואת רשימת החוסרים המדויקים שמונעים מהן לעלות לקווים. הפריט הקריטי ביותר בכל הרכבה (חסר ETA או בעל תאריך אספקה הכי מאוחר) מודגש ב-**BOLD**.")
+    st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
+    st.markdown("המערכת מקצה את המלאי הזמין לפי **עדיפות לרמות עץ מוצר נמוכות יותר**, מחשבת כמה ניתן לייצר בפועל, ומבליגה ב-**BOLD** את הפריט הקריטי ביותר (חסר ETA או בעל תאריך מאוחר).")
+
+    # איסוף דרישות התוכנית לחודש הנבחר ותיעדוף לפי רמת עץ (מספר רמה גבוה יותר = רמה נמוכה/עמוקה יותר בעץ, או לפי בחירה)
+    assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
+    
+    # מיון ההרכבות לפי רמת עץ (מהעמוקה ביותר כלפי מעלה, או להיפך בהתאם להגדרה: רמה עמוקה = מספר רמה גבוה יותר)
+    assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
+
+    # מעקב אחר מלאי זמין מתעדכן עבור כל רכיב במהלך ההקצאה
+    available_inventory_pool = {}
+    for idx_r, row_r in df.iterrows():
+        p_num = str(row_r[PN_COL]).strip()
+        base_st = pd.to_numeric(row_r[STOCK_COL], errors='coerce') or 0
+        added_st, _, _, _, _, _, _ = get_inventory_record(p_num)
+        available_inventory_pool[p_num] = max(0, base_st) + added_st
 
     production_capacity_rows = []
 
-    # מעבר על כל ההרכבות שמוגדרות לתוכנית בחודש הנבחר
-    month_assemblies = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]["Assembly_PN"].unique()
-
-    for asm_col in valid_assemblies:
-        # אם נבחרה הרכבה ספציפית בסיידבר, נסנן לפיה
+    for asm_col in assemblies_to_check:
         if selected_assembly != "הכל" and asm_col != selected_assembly:
             continue
             
@@ -374,14 +379,10 @@ with tab2:
             
         planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
         
-        # אם אין תוכנית ייצור להרכבה זו בחודש הנבחר, נציג דרישה 0 או נמשיך הלאה (אלא אם נרצה לראות את כולם)
-        if planned_build == 0:
-            continue
-
-        max_buildable = planned_build
-        item_shortage_tuples = [] # נשמור (pn, desc, shortage_qty, eta_date_val)
-        
         comps = asm_components.get(asm_col, pd.DataFrame())
+        max_buildable = planned_build
+        missing_items_details = [] # (pn, desc, missing_qty, eta_date, eta_raw)
+
         if len(comps) > 0:
             for _, comp_row in comps.iterrows():
                 qty_per = float(comp_row[asm_col])
@@ -389,47 +390,57 @@ with tab2:
                 c_desc = str(comp_row[DESC_COL]).strip()
                 
                 if qty_per > 0:
-                    # בדיקת מאזן חודשי לפי עמודת החודש הנבחר ב-MRP
-                    monthly_bal = pd.to_numeric(comp_row[selected_month_col], errors='coerce') or 0
-                    added_st, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
-                    effective_bal = monthly_bal + added_st
+                    required_for_plan = planned_build * qty_per
+                    current_pool = available_inventory_pool.get(c_pn, 0)
                     
-                    # אם יש חוסר שלילי ב-MRP לחודש זה
-                    if effective_bal < 0:
-                        shortage_qty = abs(effective_bal) * qty_per
-                        # נהפוך את ה-ETA לתאריך לצורך השוואה (אם אין ETA, ניתן ערך רחוק מאוד כדי שיהיה הכי קריטי)
-                        try:
-                            eta_dt = pd.to_datetime(eta_val).date() if eta_val else date(2099, 12, 31)
-                        except:
-                            eta_dt = date(2099, 12, 31)
-                            
-                        item_shortage_tuples.append((c_pn, c_desc, shortage_qty, eta_dt, eta_val))
+                    _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
+                    try:
+                        eta_dt = pd.to_datetime(eta_val).date() if eta_val else date(2099, 12, 31)
+                    except:
+                        eta_dt = date(2099, 12, 31)
 
-        # מציאת הפריט הכי קריטי (זה אין לו ETA בכלל או שה-ETA שלו הוא המאוחר ביותר)
-        # מיון לפי תאריך ETA יורד (מי שהכי רחוק או בלי ETA יהיה ראשון)
-        if item_shortage_tuples:
-            item_shortage_tuples.sort(key=lambda x: x[3], reverse=True)
-            most_critical_pn = item_shortage_tuples[0][0]
+                    if current_pool >= required_for_plan:
+                        # יש מספיק מלאי - נגזור מהמאגר
+                        available_inventory_pool[c_pn] = current_pool - required_for_plan
+                        possible_units = planned_build
+                    else:
+                        # אין מספיק מלאי - מה שנותר הולך להרכבה זו לפי עדיפות רמות העץ
+                        possible_units = int(current_pool / qty_per) if qty_per > 0 else 0
+                        missing_qty = required_for_plan - current_pool
+                        available_inventory_pool[c_pn] = 0 # נגמר המלאי
+                        
+                        missing_items_details.append((c_pn, c_desc, missing_qty, eta_dt, eta_val))
+
+                    if possible_units < max_buildable:
+                        max_buildable = possible_units
+
+        # זיהוי הפריט הקריטי ביותר מבין החסרים (חסר ETA או תאריך מאוחר ביותר)
+        if missing_items_details:
+            # מיון לפי ETA יורד (חסר ETA / שנת 2099 יהיו ראשונים)
+            missing_items_details.sort(key=lambda x: x[3], reverse=True)
+            most_critical_pn = missing_items_details[0][0]
         else:
             most_critical_pn = None
 
         formatted_missing = []
-        for c_pn, c_desc, s_qty, _, raw_eta in item_shortage_tuples:
+        for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
             eta_str = f" [ETA: {raw_eta}]" if raw_eta else " [ללא ETA]"
-            item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {s_qty:g}{eta_str}"
+            item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
             
             if c_pn == most_critical_pn:
                 formatted_missing.append(f"**{item_text}**")
             else:
                 formatted_missing.append(item_text)
 
-        missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר."
+        missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר את כל התוכנית."
 
         production_capacity_rows.append({
             "קוד הרכבה": asm_col,
             "תיאור הרכבה": asm_desc,
-            "כמות מתוכננת לייצור": planned_build,
-            "רכיבים חסרים שמונעים עלייה לקווים (הקריטי ב-BOLD)": missing_str
+            "רמה בעץ": assembly_levels.get(asm_col, 0),
+            "תוכנית ייצור": planned_build,
+            "ניתן לייצר בפועל (CTB)": max_buildable,
+            "רכיבים שחסרים לעלייה לקווים (הקריטי ב-BOLD)": missing_str
         })
 
     if production_capacity_rows:
