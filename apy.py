@@ -16,8 +16,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 דשבורד ניתוח חוסרים מתקדם - MRP")
-st.markdown("ניתוח חוסרים פר פריט מול הרכבות (כמות נדרשת להרכבה × תוכנית ייצור חודשית)")
+st.title("📊 דשבורד ניתוח חוסרים מדויק לפי הרכבה - MRP")
+st.markdown("חישוב ביקוש וחוסר פר פריט ביחס לכל הרכבה (כמות להרכבה × תוכנית ייצור חודשית להרכבה)")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (For ETA Updates)
@@ -70,19 +70,51 @@ def eta_color(eta_value):
 # ==========================================================
 @st.cache_data
 def load_data(url):
+    # טעינת טבלת ה-MRP הראשית (מתחילה בשורה 30, אינדקס 29)
     df = pd.read_excel(url, header=29)
     df_levels = pd.read_excel(url, header=None, skiprows=28, nrows=1)
     df_desc = pd.read_excel(url, header=None, skiprows=27, nrows=1)
     
+    # טעינת מטריצת תוכנית הייצור החודשית של ההרכבות (שורות 3 עד 23, עמודות תאריכים)
+    df_raw = pd.read_excel(url, header=None)
+    
     df.columns = [str(c).strip() if pd.notnull(c) else c for c in df.columns]
-    return df, df_levels, df_desc
+    return df, df_levels, df_desc, df_raw
 
 try:
     with st.spinner('טוען נתוני MRP מ-GitHub...'):
-        df, df_levels, df_desc = load_data(GITHUB_URL)
+        df, df_levels, df_desc, df_raw = load_data(GITHUB_URL)
 except Exception as e:
     st.error(f"שגיאה בטעינת הקובץ מ-GitHub. ודא שהקישור הוא מסוג Raw ושהמאגר ציבורי.\nפירוט השגיאה: {e}")
     st.stop()
+
+# ==========================================================
+# EXTRACT ASSEMBLY MONTHLY BUILD PLAN
+# ==========================================================
+# חילוץ תוכנית הייצור החודשית להרכבות מתוך השורות העליונות בקובץ
+header_dates = df_raw.iloc[2, 108:132].values
+plan_rows = []
+
+for r in range(3, 24):
+    asm_pn = df_raw.iloc[r, 106]
+    asm_name = df_raw.iloc[r, 104]
+    if pd.notnull(asm_pn):
+        for c_idx, date_val in enumerate(header_dates):
+            if pd.notnull(date_val):
+                qty = df_raw.iloc[r, 108 + c_idx]
+                if pd.notnull(qty) and qty != '' and qty != 'NaN':
+                    try:
+                        q_val = float(qty)
+                        if q_val > 0:
+                            plan_rows.append({
+                                "Assembly_PN": str(asm_pn).strip(),
+                                "Month": pd.to_datetime(date_val).strftime("%Y-%m-%d"),
+                                "Build_Qty": q_val
+                            })
+                    except:
+                        pass
+
+assembly_plan_df = pd.DataFrame(plan_rows)
 
 # ==========================================================
 # COLUMN MAPPING
@@ -95,17 +127,19 @@ STOCK_COL = df.columns[79]     # מלאי (עמודה CB)
 # עמודות ההרכבות (K עד AJ) - אינדקסים 10 עד 35
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 
-# עמודות מאזן החומרים / חודשים (DE עד EB)
-MONTH_COLS = df.columns[108:132].tolist()
+# רשימת חודשים זמינים לבחירה
+available_months = sorted(assembly_plan_df["Month"].unique().tolist()) if not assembly_plan_df.empty else []
 
 # ==========================================================
 # SIDEBAR FILTERS
 # ==========================================================
 st.sidebar.header("🔍 מסננים")
 
-month_options = {str(m): m for m in MONTH_COLS if pd.notnull(m)}
-selected_month_str = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
-selected_month = month_options[selected_month_str]
+if available_months:
+    selected_month = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", available_months)
+else:
+    st.sidebar.error("לא נמצאו תאריכים בתוכנית הייצור")
+    st.stop()
 
 # מיפוי הרכבות כולל תיאור
 assembly_mapping = {"הכל": "הכל"}
@@ -127,23 +161,29 @@ item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
 # ==========================================================
-# ADVANCED BREAKDOWN ENGINE (Part per Assembly mapping)
+# PRECISE BREAKDOWN & DEMAND CALCULATION
 # ==========================================================
-# נבנה טבלה מפורטת המפרטת לכל פריט את הדרישה שלו בכל הרכבה
 breakdown_rows = []
 
+# שליפת תוכנית הייצור לחודש הנבחר בלבד עבור כל הרכבה
+month_plan = assembly_plan_df[assembly_plan_df["Month"] == selected_month]
+plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
+
 for idx, row in df.iterrows():
-    pn = row[PN_COL]
+    pn = str(row[PN_COL]).strip()
     desc = row[DESC_COL]
     item_type = row[ITEM_TYPE_COL]
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     
     for asm in ASSEMBLY_COLS:
-        # כמות הפריט הנדרשת להרכבה הספציפית
         qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
         if qty_per_asm > 0:
-            # נרצה לחלץ את תוכנית הייצור של ההרכבה בחודש הנבחר אם קיימת, 
-            # לחלופין נסתמך על החישוב הקיים בשורת הפריט או נחשב לפי העניין
+            # כמות ייצור של ההרכבה בחודש הנבחר
+            asm_build_qty = plan_dict.get(asm, 0.0)
+            
+            # ביקוש חודשי מדויק לפריט מול הרכבה ספציפית זו
+            required_demand = qty_per_asm * asm_build_qty
+            
             asm_desc = assembly_mapping.get(asm, asm)
             breakdown_rows.append({
                 "PN": pn,
@@ -152,6 +192,8 @@ for idx, row in df.iterrows():
                 "Assembly": asm,
                 "Assembly_Desc": asm_desc,
                 "Qty_Per_Assembly": qty_per_asm,
+                "Assembly_Monthly_Build": asm_build_qty,
+                "Required_Demand": required_demand,
                 "Stock": stock
             })
 
@@ -165,32 +207,28 @@ if selected_item_type != "הכל":
 if selected_assembly != "הכל":
     breakdown_df = breakdown_df[breakdown_df["Assembly"] == selected_assembly]
 
-# חישוב מאזן חומרים כולל לפריט מהעמודה החודשית הנבחרת
-df['Total_Balance'] = pd.to_numeric(df[selected_month], errors='coerce').fillna(0)
-balance_map = df.set_index(PN_COL)['Total_Balance'].to_dict()
-
-breakdown_df["Monthly_Balance"] = breakdown_df["PN"].map(balance_map)
-# פריטים בחוסר הם בעלי מאזן שלילי
-shortage_breakdown = breakdown_df[breakdown_df["Monthly_Balance"] < 0].copy()
-shortage_breakdown["Shortage_Qty"] = shortage_breakdown["Monthly_Balance"].abs()
+# חישוב חוסר פר שורה (השוואה מול מלאי זמין יחסי או הצגת הביקוש והמלאי להתרשמות)
+# לצורך פשטות הדיוק: אם הביקוש לחודש עולה על המלאי, נציג את הפער
+breakdown_df["Net_Shortage"] = breakdown_df["Required_Demand"] - breakdown_df["Stock"]
+shortage_breakdown = breakdown_df[breakdown_df["Net_Shortage"] > 0].copy()
 
 # ==========================================================
 # DASHBOARD UI
 # ==========================================================
-st.subheader(f"ניתוח חוסרים מפורט לפי הרכבה לחודש: {selected_month_str}")
+st.subheader(f"ניתוח חוסרים מדויק לפי הרכבה לחודש: {selected_month}")
 
 col1, col2 = st.columns(2)
-col1.metric("🔴 שורות חוסר משוייכות", len(shortage_breakdown))
-col2.metric("📦 סך כמות חסרה", f"{shortage_breakdown['Shortage_Qty'].sum():,.0f}")
+col1.metric("🔴 שורות חוסר מדוייקות", len(shortage_breakdown))
+col2.metric("📦 סך כמות חסרה להרכבות", f"{shortage_breakdown['Net_Shortage'].sum():,.0f}")
 
 st.divider()
 
 if len(shortage_breakdown) > 0:
-    st.subheader("📋 פירוט חוסרים לפי פריט והרכבה")
+    st.subheader("📋 פירוט חוסרים פר פריט מול כל הרכבה")
     
     display_df = shortage_breakdown[[
         "PN", "Description", "Item_Type", "Assembly", "Assembly_Desc", 
-        "Qty_Per_Assembly", "Stock", "Shortage_Qty"
+        "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Net_Shortage"
     ]].rename(columns={
         "PN": "מק\"ט",
         "Description": "תיאור פריט",
@@ -198,13 +236,15 @@ if len(shortage_breakdown) > 0:
         "Assembly": "קוד הרכבה",
         "Assembly_Desc": "תיאור הרכבה",
         "Qty_Per_Assembly": "כמות נדרשת להרכבה",
+        "Assembly_Monthly_Build": "ת. ייצור הרכבה לחודש",
+        "Required_Demand": "ביקוש חודשי בהרכבה",
         "Stock": "מלאי נוכחי",
-        "Shortage_Qty": "חוסר מחושב"
+        "Net_Shortage": "חוסר נדרש"
     })
     
-    st.dataframe(display_df.sort_values(by="חוסר מחושב", ascending=False), use_container_width=True)
+    st.dataframe(display_df.sort_values(by="חוסר נדרש", ascending=False), use_container_width=True)
 else:
-    st.success("🎉 לא נמצאו חוסרים עבור הסינונים שנבחרו לחודש זה!")
+    st.success("🎉 לא נמצאו חוסרים מול תוכנית הייצור עבור הסינונים שנבחרו לחודש זה!")
 
 # ==========================================================
 # ETA MANAGEMENT
