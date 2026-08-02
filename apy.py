@@ -41,7 +41,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Master Production Schedule")
-st.markdown("ניהול חוסרים דינמי, חישוב תוכנית ייצור חודשית מבוססת MRP, עדכון מלאי חי וניהול UNDO")
+st.markdown("ניהול חוסרים דינמי, חישוב תוכנית ייצור חודשית, חיפוש חכם עם השלמה אוטומטית וניהול UNDO")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -111,7 +111,6 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
             pass
 
 def delete_inventory_record(pn):
-    """מחיקת השינוי (UNDO) והחזרת המק\"ט למצב המקורי"""
     conn.execute("DELETE FROM inventory_updates WHERE pn = ?", (pn,))
     conn.commit()
 
@@ -201,7 +200,7 @@ for idx, row in df.iterrows():
         df.at[idx, STOCK_COL] = base_stock + saved_stock_add
 
 # ==========================================================
-# SIDEBAR FILTERS
+# SIDEBAR FILTERS & SMART AUTOCOMPLETE SEARCH
 # ==========================================================
 st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
@@ -252,7 +251,12 @@ selected_assembly = st.sidebar.selectbox(
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
-quick_search = st.sidebar.text_input("🔎 חיפוש מהיר (מק\"ט / תיאור)", "")
+# החלפת תיבת טקסט רגילה בחיפוש חכם עם השלמה אוטומטית (Autocomplete)
+item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
+selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק\"ט/תיאור)", item_choices)
+
+# חילוץ המק"ט שנבחר מתוך תיבת הבחירה החכמה
+search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
 # CORE LOGIC
@@ -328,15 +332,11 @@ if not breakdown_df.empty:
         breakdown_df = breakdown_df[breakdown_df["Item_Type"] == selected_item_type]
     if selected_assembly != "הכל":
         breakdown_df = breakdown_df[breakdown_df["Assembly"] == selected_assembly]
-    if quick_search:
-        q = quick_search.lower()
-        breakdown_df = breakdown_df[
-            breakdown_df["PN"].str.lower().str.contains(q, na=False) | 
-            breakdown_df["Description"].str.lower().str.contains(q, na=False)
-        ]
+    if search_pn != "הכל":
+        breakdown_df = breakdown_df[breakdown_df["PN"] == search_pn]
 
 # ==========================================================
-# TABS (כולל לשונית ניהול UNDO)
+# TABS
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📦 דשבורד חוסרים", 
@@ -370,7 +370,7 @@ with tab1:
         })
         st.dataframe(display_df.sort_values(by="סך חוסר מעודכן ב-MRP", ascending=False), use_container_width=True)
     else:
-        st.success("🎉 אין חוסרים ב-MRP לחודש זה!")
+        st.success("🎉 אין חוסרים ב-MRP לחודש זה עבור הסינון שנבחר!")
 
 with tab2:
     st.subheader("📊 תוכנית ייצור מבוססת MRP: כמה הרכבות ניתן לייצר בכל חודש?")
