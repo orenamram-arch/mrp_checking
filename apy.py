@@ -40,18 +40,19 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("📊 MRP Control Tower & Enterprise Portal")
-st.markdown("מערכת ניהול חוסרים מתקדמת הכוללת פורטל ספקים, התראות אוטומטיות וניתוח צווארי בקבוק בעץ המוצר")
+st.title("📊 MRP Control Tower & Live Inventory Engine")
+st.markdown("ניהול חוסרים דינמי: עדכון מלאי נכנס ו-ETA שמשפיעים ישירות על חישובי ה-MRP ומסד הנתונים")
 
 # ==========================================================
-# LOCAL DATABASE SETUP (Audit Trail & Suppliers)
+# LOCAL DATABASE SETUP (Persistent Storage)
 # ==========================================================
 conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
 
 conn.execute("""
-CREATE TABLE IF NOT EXISTS eta_updates
+CREATE TABLE IF NOT EXISTS inventory_updates
 (
     pn TEXT PRIMARY KEY,
+    added_stock REAL,
     eta TEXT,
     status TEXT,
     supplier TEXT,
@@ -62,10 +63,11 @@ CREATE TABLE IF NOT EXISTS eta_updates
 """)
 
 conn.execute("""
-CREATE TABLE IF NOT EXISTS eta_history
+CREATE TABLE IF NOT EXISTS inventory_history
 (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pn TEXT,
+    added_stock REAL,
     eta TEXT,
     status TEXT,
     supplier TEXT,
@@ -76,44 +78,37 @@ CREATE TABLE IF NOT EXISTS eta_history
 """)
 conn.commit()
 
-def get_eta_record(pn):
+def get_inventory_record(pn):
     cur = conn.cursor()
     try:
-        cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_updates WHERE pn = ?", (pn,))
+        cur.execute("SELECT added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates WHERE pn = ?", (pn,))
         res = cur.fetchone()
         if res:
-            return res[0], res[1], res[2], res[3], res[4], res[5]
+            return res[0], res[1], res[2], res[3], res[4], res[5], res[6]
     except:
         pass
-    return None
+    return 0.0, str(date.today()), "פתוח", "אופק", "", "", ""
 
-def send_teams_notification(webhook_url, message):
-    if not webhook_url:
-        return False
-    try:
-        payload = {"text": message}
-        response = requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
-        return response.status_code == 200
-    except:
-        return False
-
-def save_eta_record(pn, eta, status, supplier, comment, updated_by, webhook_url=""):
+def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     conn.execute("""
-    INSERT OR REPLACE INTO eta_updates (pn, eta, status, supplier, comment, updated_by, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (pn, eta, status, supplier, comment, updated_by, now_str))
+    INSERT OR REPLACE INTO inventory_updates (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
     
     conn.execute("""
-    INSERT INTO eta_history (pn, eta, status, supplier, comment, updated_by, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (pn, eta, status, supplier, comment, updated_by, now_str))
+    INSERT INTO inventory_history (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
     
     conn.commit()
     
     if webhook_url:
-        msg = "🔔 עדכון MRP חדש במערכת!\nמק\"ט: " + str(pn) + "\nסטטוס: " + str(status) + "\nספק: " + str(supplier) + "\nETA: " + str(eta)
-        send_teams_notification(webhook_url, msg)
+        msg = "🔔 עדכון מלאי/ETA למוצר!\nמק\"ט: " + str(pn) + "\nתוספת מלאי: " + str(added_stock) + "\nסטטוס: " + str(status) + "\nETA: " + str(eta)
+        try:
+            requests.post(webhook_url, data=json.dumps({"text": msg}), headers={'Content-Type': 'application/json'})
+        except:
+            pass
 
 def eta_color(eta_value):
     if eta_value in [None, "", "NaT"]:
@@ -148,7 +143,7 @@ try:
     with st.spinner('טוען נתוני MRP מ-GitHub...'):
         df, df_levels, df_desc, df_raw = load_data(GITHUB_URL)
 except Exception as e:
-    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. ודא שהקישור הוא מסוג Raw ושהמאגר ציבורי.\nפירוט השגיאה: {e}")
+    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
     st.stop()
 
 # ==========================================================
@@ -191,20 +186,22 @@ ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist()
 
 # ==========================================================
-# SIDEBAR & PORTAL MODE CONFIGURATION
+# APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
 # ==========================================================
-st.sidebar.header("⚙️ מצב מערכת וניהול")
-portal_mode = st.sidebar.radio("בחר תצוגה:", ["מנהל מערכת מלא", "פורטל קבלן משנה (אופק בלבד)"])
+# נטען את כל העדכונים שנשמרו במסד הנתונים ונוסיף אותם למלאי הבסיסי
+for idx, row in df.iterrows():
+    pn = str(row[PN_COL]).strip()
+    saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
+    if saved_stock_add > 0:
+        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+        df.at[idx, STOCK_COL] = base_stock + saved_stock_add
 
+# ==========================================================
+# SIDEBAR FILTERS
+# ==========================================================
+st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
-
 supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
-
-if portal_mode == "פורטל קבלן משנה (אופק בלבד)":
-    st.warning("🔒 אתה נמצא כעת בתצוגת פורטל קבלן משנה (אופק). מוצגים אך ורק פריטים שמשוייכים לאופק.")
-    selected_supplier_filter = "אופק"
-else:
-    selected_supplier_filter = "הכל"
 
 st.sidebar.header("🔍 מסננים מתקדמים")
 
@@ -254,9 +251,20 @@ selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS
 quick_search = st.sidebar.text_input("🔎 חיפוש מהיר (מק\"ט / תיאור)", "")
 
 # ==========================================================
-# CORE LOGIC
+# CORE LOGIC (MRP Calculation with Updated Inventory)
 # ==========================================================
+# חשוב מחדש את מאזן החומרים החודשי לפי המלאי החדש שנוסף
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
+# אם המלאי עודכן כלפי מעלה, נעדכן את ה-Balance באופן יחסי כך שהחוסר יתעדכן אוטומטית
+for idx, row in df.iterrows():
+    pn = str(row[PN_COL]).strip()
+    added_stock, _, _, _, _, _, _ = get_inventory_record(pn)
+    if added_stock > 0:
+        current_bal = df.at[idx, 'Monthly_Balance']
+        # אם יש חוסר שלילי, הוספת מלאי תקטין את החוסר (תקרב ל-0)
+        if current_bal < 0:
+            df.at[idx, 'Monthly_Balance'] = current_bal + added_stock
+
 mrp_shortages = df[df['Monthly_Balance'] < 0].copy()
 mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
@@ -272,11 +280,7 @@ for idx, row in mrp_shortages.iterrows():
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     total_mrp_shortage = row['Total_MRP_Shortage']
     
-    rec_check = get_eta_record(pn)
-    current_sup = rec_check[2] if rec_check else "אופק"
-    
-    if selected_supplier_filter != "הכל" and current_sup != selected_supplier_filter:
-        continue
+    _, _, _, current_sup, _, _, _ = get_inventory_record(pn)
 
     matched_any = False
     for asm in filtered_assembly_cols:
@@ -331,12 +335,12 @@ if not breakdown_df.empty:
         ]
 
 # ==========================================================
-# TABS FOR ENTERPRISE FEATURES
+# TABS
 # ==========================================================
-tab1, tab2, tab3 = st.tabs(["📦 דשבורד חוסרים ראשי", "⚠️ ניתוח צווארי בקבוק (Bottlenecks)", "📅 מעקב ETA וספקים"])
+tab1, tab2, tab3 = st.tabs(["📦 דשבורד חוסרים ראשי", "⚠️ ניתוח צווארי בקבוק (Bottlenecks)", "📅 עדכון מלאי, ETA וספקים"])
 
 with tab1:
-    st.subheader("📈 ניתוח חוסרים לחודש: " + str(selected_month_label))
+    st.subheader("📈 ניתוח חוסרים מעודכן לחודש: " + str(selected_month_label))
 
     col1, col2, col3 = st.columns(3)
     col1.metric("🔴 פריטים בחוסר ב-MRP", len(mrp_shortages))
@@ -347,7 +351,7 @@ with tab1:
     st.divider()
 
     if not breakdown_df.empty and len(breakdown_df) > 0:
-        st.subheader("📋 פירוט חוסרים מלא ופילוח מול הרכבות")
+        st.subheader("📋 פירוט חוסרים מלא ופילוח מול הרכבות (לוקח בחשבון מלאי חדש שנכנס)")
         
         display_df = breakdown_df[[
             "PN", "Description", "Item_Type", "Supplier", "Assembly", "Assembly_Desc", 
@@ -362,49 +366,39 @@ with tab1:
             "Qty_Per_Assembly": "כמות נדרשת להרכבה",
             "Assembly_Monthly_Build": "ת. ייצור הרכבה לחודש",
             "Required_Demand": "ביקוש מדויק להרכבה",
-            "Stock": "מלאי נוכחי",
-            "Total_MRP_Shortage": "סך חוסר ב-MRP"
+            "Stock": "מלאי נוכחי (כולל תוספות)",
+            "Total_MRP_Shortage": "סך חוסר מעודכן ב-MRP"
         })
         
-        def highlight_shortage(s):
-            return ['background-color: #ffcccc' if v > 1000 else '' for v in s]
-
-        st.dataframe(
-            display_df.sort_values(by="סך חוסר ב-MRP", ascending=False).style.apply(highlight_shortage, subset=['סך חוסר ב-MRP']), 
-            use_container_width=True
-        )
+        st.dataframe(display_df.sort_values(by="סך חוסר מעודכן ב-MRP", ascending=False), use_container_width=True)
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            display_df.to_excel(writer, index=False, sheet_name='Shortages_Breakdown')
+            display_df.to_excel(writer, index=False, sheet_name='Live_Shortages')
         processed_data = output.getvalue()
 
         st.download_button(
-            label="📥 הורד את הטבלה המוצגת לקובץ Excel",
+            label="📥 הורד את הטבלה המעודכנת לקובץ Excel",
             data=processed_data,
-            file_name=f"MRP_Shortages_{selected_ym}.xlsx",
+            file_name=f"Live_MRP_Shortages_{selected_ym}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.success("🎉 לא נמצאו חוסרים ב-MRP עבור הסינונים שנבחרו לחודש זה!")
+        st.success("🎉 אין חוסרים ב-MRP לחודש זה (או שהם התאפסו בעקבות מלאי חדש שנכנס)!")
 
 with tab2:
-    st.subheader("⚠️ ניתוח צווארי בקבוק (Bottleneck Analysis) בעץ המוצר")
-    st.markdown("סקירה אוטומטית של רכיבים המופיעים במספר הרב ביותר של הרכבות וגורמים להשפעת רוחב על הייצור:")
-    
+    st.subheader("⚠️ ניתוח צווארי בקבוק (Bottleneck Analysis)")
     bottleneck_rows = []
     for idx, row in df.iterrows():
         pn = str(row[PN_COL]).strip()
         desc = str(row[DESC_COL])
         count_assemblies = 0
         total_qty_needed = 0
-        
         for asm in ASSEMBLY_COLS:
             q = pd.to_numeric(row[asm], errors='coerce') or 0
             if q > 0:
                 count_assemblies += 1
                 total_qty_needed += q
-                
         if count_assemblies > 1:
             bottleneck_rows.append({
                 "מק\"ט": pn,
@@ -412,90 +406,68 @@ with tab2:
                 "מספר הרכבות שבהן משתתף": count_assemblies,
                 "סך כמות נדרשת במצטבר": total_qty_needed
             })
-            
     if bottleneck_rows:
-        bn_df = pd.DataFrame(bottleneck_rows).sort_values(by="מספר הרכבות שבהן משתתף", ascending=False)
-        st.dataframe(bn_df.head(20), use_container_width=True)
-        st.info("💡 טיפ: רכיבים המופיעים במספר רב של הרכבות הם צווארי בקבוק פוטנציאליים. עדיפות עליונה להבטיח את זמינותם ברכש.")
+        st.dataframe(pd.DataFrame(bottleneck_rows).sort_values(by="מספר הרכבות שבהן משתתף", ascending=False).head(20), use_container_width=True)
     else:
         st.info("לא נמצאו פריטים משותפים למספר הרכבות.")
 
 with tab3:
-    st.subheader("📅 מעקב ETA וספקים (כולל היסטוריית שינויים ועדכונים)")
+    st.subheader("📅 עדכון מלאי נכנס, ETA וספקים (מתעדכן מידית ב-MRP ובמסד הנתונים)")
 
     pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
-    selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס וספק", pn_values)
+    selected_pn = st.selectbox("בחר מק\"ט לעדכון", pn_values)
 
-    existing_rec = get_eta_record(selected_pn)
-    def_eta, def_status, def_supplier, def_comment, def_by = (
-        (existing_rec[0], existing_rec[1], existing_rec[2], existing_rec[3], existing_rec[4]) 
-        if existing_rec else (date.today(), "פתוח", "אופק", "", "")
-    )
+    # שליפת נתונים קיימים
+    saved_stock, saved_eta, saved_status, saved_supplier, saved_comment, saved_by, _ = get_inventory_record(selected_pn)
 
-    with st.form("eta_form"):
+    with st.form("inventory_form"):
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
+            added_stock_input = st.number_input("כמות מלאי חדשה שהגיעה (להוספה למלאי)", min_value=0.0, value=float(saved_stock), step=1.0)
+        with col_f2:
             try:
-                parsed_eta = pd.to_datetime(def_eta).date() if def_eta else date.today()
+                parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else date.today()
             except:
                 parsed_eta = date.today()
             eta_date = st.date_input("תאריך הגעה משוער (ETA)", value=parsed_eta)
-        with col_f2:
-            status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
-            status_idx = status_options.index(def_status) if def_status in status_options else 0
-            status = st.selectbox("סטטוס", status_options, index=status_idx)
         with col_f3:
-            sup_idx = supplier_options.index(def_supplier) if def_supplier in supplier_options else 0
-            supplier = st.selectbox("קבלן משנה / ספק", supplier_options, index=sup_idx)
+            status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
+            status_idx = status_options.index(saved_status) if saved_status in status_options else 0
+            status = st.selectbox("סטטוס", status_options, index=status_idx)
 
-        comment = st.text_area("הערות מעקב", value=def_comment)
-        updated_by = st.text_input("עודכן על ידי", value=def_by)
-        save_btn = st.form_submit_button("שמור עדכון במערכת ושלח התראה")
+        col_f4, col_f5 = st.columns(2)
+        with col_f4:
+            sup_idx = supplier_options.index(saved_supplier) if saved_supplier in supplier_options else 0
+            supplier = st.selectbox("ספק / קבלן משנה", supplier_options, index=sup_idx)
+        with col_f5:
+            updated_by = st.text_input("עודכן על ידי", value=saved_by)
+
+        comment = st.text_area("הערות מעקב", value=saved_comment)
+        save_btn = st.form_submit_button("שמור עדכון והחל על ה-MRP")
 
     if save_btn:
-        save_eta_record(selected_pn, str(eta_date), status, supplier, comment, updated_by, webhook_url)
-        st.success("העדכון, ההיסטוריה וההתראה נשמרו בהצלחה במסד הנתונים המקומי!")
+        save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
+        st.success("הנתונים נשמרו בהצלחה במסד הנתונים והשפיעו מידית על תחשיבי ה-MRP!")
+        st.rerun()
 
-    # אפשרות להורדת גיבוי של בסיס הנתונים המקומי
+    # אפשרות גיבוי והורדת בסיס הנתונים
     st.divider()
-    st.markdown("### 💾 גיבוי נתונים")
     with open(LOCAL_DB_FILE, "rb") as db_file:
         db_bytes = db_file.read()
     st.download_button(
-        label="📥 הורד גיבוי של מסד הנתונים המקומי (.db)",
+        label="📥 הורד גיבוי מלא של מסד הנתונים המקומי (.db)",
         data=db_bytes,
-        file_name="eta_updates_backup.db",
+        file_name="inventory_backup.db",
         mime="application/octet-stream"
     )
 
-    st.subheader("🚦 טבלת סטטוסים וספקים שמורים במערכת")
-    eta_rows = []
-    for pn in pn_values:
-        rec = get_eta_record(pn)
-        if rec:
-            eta_rows.append({
-                "מק\"ט": pn,
-                "ETA": rec[0],
-                "סיכון": eta_color(rec[0]),
-                "סטטוס": rec[1],
-                "ספק / קב\"מ": rec[2],
-                "הערות": rec[3],
-                "אחראי": rec[4],
-                "תאריך עדכון": rec[5]
-            })
-
-    eta_df = pd.DataFrame(eta_rows)
-    if len(eta_df) > 0:
-        st.dataframe(eta_df, use_container_width=True)
-    else:
-        st.info("עדיין לא נשמרו עדכונים במערכת.")
-
-    st.subheader("📜 היסטוריית שינויים (Audit Trail) עבור מק\"ט: " + str(selected_pn))
+    # טבלת מעקב והיסטוריה
+    st.subheader("🚦 טבלת כל הפריטים שעודכנו במערכת")
     history_cur = conn.cursor()
-    history_cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_history WHERE pn = ? ORDER BY id DESC", (selected_pn,))
-    hist_rows = history_cur.fetchall()
-    if hist_rows:
-        hist_df = pd.DataFrame(hist_rows, columns=["ETA", "סטטוס", "ספק", "הערות", "עודכן על ידי", "זמן עדכון"])
-        st.dataframe(hist_df, use_container_width=True)
+    history_cur.execute("SELECT pn, added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates ORDER BY updated_at DESC")
+    all_updated_rows = history_cur.fetchall()
+    if all_updated_rows:
+        up_df = pd.DataFrame(all_updated_rows, columns=["מק\"ט", "מלאי נוסף", "ETA", "סטטוס", "ספק", "הערות", "עודכן ע\"י", "זמן עדכון"])
+        st.dataframe(up_df, use_container_width=True)
     else:
-        st.info("אין היסטוריית שינויים קודמת למק\"ט זה.")
+        st.info("עדיין לא עודכנו פריטים במערכת.")
