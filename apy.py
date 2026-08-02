@@ -9,7 +9,7 @@ import json
 import random
 
 # ==========================================================
-# CONFIGURATION
+# CONFIGURATION & LOGIN SYSTEM
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 LOCAL_DB_FILE = "eta_updates.db" 
@@ -20,8 +20,29 @@ st.set_page_config(
     layout="wide"
 )
 
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == "ELTA2026":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("הכנס סיסמת כניסה למערכת:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("הכנס סיסמת כניסה למערכת:", type="password", on_change=password_entered, key="password")
+        st.error("😕 סיסמה שגויה")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build (ללא סיסמה)")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build עם ETA מדויק")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -118,11 +139,11 @@ except Exception as e:
 # ==========================================================
 # EXTRACT ASSEMBLY MONTHLY BUILD PLAN & BOM LEVELS
 # ==========================================================
-header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
+header_dates = df_raw.iloc[2, 108:132].values
 plan_rows = []
 
-for r in range(3, min(24, df_raw.shape[0])):
-    asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
+for r in range(3, 24):
+    asm_pn = df_raw.iloc[r, 106]
     if pd.notnull(asm_pn):
         for c_idx, date_val in enumerate(header_dates):
             if pd.notnull(date_val):
@@ -144,10 +165,10 @@ assembly_plan_df = pd.DataFrame(plan_rows)
 
 PN_COL = df.columns[1]     
 DESC_COL = df.columns[4]   
-ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1] 
-STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]     
+ITEM_TYPE_COL = df.columns[44] 
+STOCK_COL = df.columns[79]     
 ASSEMBLY_COLS = df.columns[10:36].tolist()
-MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
+MONTH_COLS = df.columns[108:132].tolist()
 
 valid_assemblies = []
 for col in ASSEMBLY_COLS:
@@ -173,7 +194,8 @@ asm_components = {}
 for col in valid_assemblies:
     asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
 
-# פונקציית שליפת ETA מוגנת מפני חריגת אינדקסים באקסל
+raw_eta_dates = df_raw.iloc[2, 108:132].values
+
 def get_first_supply_eta(pn):
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
@@ -182,17 +204,18 @@ def get_first_supply_eta(pn):
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
-        max_cols = df_raw.shape[1]
-        for col_pos in range(80, min(108, max_cols)):
+        for c_idx, col_pos in enumerate(range(108, 132)):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
                 if pd.notnull(val) and val != '' and val != 'NaN':
                     q = float(val)
                     if q > 0:
-                        date_val = df_raw.iloc[2, col_pos]
+                        date_val = raw_eta_dates[c_idx]
                         if pd.notnull(date_val):
                             dt = pd.to_datetime(date_val)
-                            return dt.strftime("%Y-%m")
+                            # הפחתת חודש אחד מהתוצאה כדי לתקן את ההסטה
+                            corrected_dt = dt - pd.DateOffset(months=1)
+                            return corrected_dt.strftime("%Y-%m")
             except:
                 pass
     return "ללא ETA"
@@ -225,9 +248,6 @@ for m in MONTH_COLS:
         except:
             month_options[str(m)] = m
 
-if not month_options:
-    month_options["ברירת מחדל"] = df.columns[108] if len(df.columns) > 108 else df.columns[-1]
-
 selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month_col = month_options[selected_month_label]
 
@@ -259,7 +279,7 @@ selected_assembly = st.sidebar.selectbox(
     format_func=lambda x: assembly_mapping.get(x, x)
 )
 
-item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
+item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
@@ -288,7 +308,7 @@ breakdown_rows = []
 for idx, row in mrp_shortages.iterrows():
     pn = str(row[PN_COL]).strip()
     desc = str(row[DESC_COL])
-    item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+    item_type = str(row[ITEM_TYPE_COL])
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     total_mrp_shortage = row['Total_MRP_Shortage']
     
@@ -387,7 +407,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מציגה את הרכיבים החסרים בלבד, מאתרת את ה-ETA המקורי מהאקסל, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת מציגה את מועד ההגעה המתוקן (ספטמבר 2026), מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
