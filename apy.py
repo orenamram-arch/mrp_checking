@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build מבוססת ETA מדויק")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build מבוססת ETA מקורי מהאקסל")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -85,7 +85,6 @@ def get_inventory_record(pn):
         cur.execute("SELECT added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates WHERE pn = ?", (pn,))
         res = cur.fetchone()
         if res:
-            # וידוא ששדה ה-ETA לא ריק או מוגדר כמחרוזת ריקה/null
             eta_val = res[1] if res[1] and str(res[1]).strip() not in ["", "None", "NaT", "nan"] else ""
             return res[0], eta_val, res[2], res[3], res[4], res[5], res[6]
     except:
@@ -194,6 +193,35 @@ for col in valid_assemblies:
 asm_components = {}
 for col in valid_assemblies:
     asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
+
+# פונקציה לחילוץ ה-ETA האוטומטי מעמודות CC עד CZ (אינדקסים 80 עד 103 בערך, או לפי שורת התאריכים 2 ועמודות 108 עד 132)
+# שורת התאריכים היא שורה 2 (אינדקס 2) בעמודות 108 עד 132 (CC עד CZ)
+raw_eta_dates = df_raw.iloc[2, 108:132].values
+
+def get_first_supply_eta(pn):
+    # קודם כל נבדוק אם יש עדכון ידני ב-DB המקומי
+    _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
+    if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
+        return manual_eta
+        
+    # אם אין עדכון ידני, נחפש בשורות הגולמיות של האקסל (עמודות CC עד CZ, אינדקסים 108-132)
+    # נחפש את השורה שבה המק"ט מופיע בעמודה 1 (PN_COL באקסל הגולמי הוא בדרך כלל עמודה 1 או 0)
+    matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
+    if not matching_rows.empty:
+        row_idx = matching_rows.index[0]
+        for c_idx, col_pos in enumerate(range(108, 132)):
+            try:
+                val = df_raw.iloc[row_idx, col_pos]
+                if pd.notnull(val) and val != '' and val != 'NaN':
+                    q = float(val)
+                    if q > 0:
+                        date_val = raw_eta_dates[c_idx]
+                        if pd.notnull(date_val):
+                            dt = pd.to_datetime(date_val)
+                            return dt.strftime("%Y-%m") # מחזיר את החודש והשנה הראשונים שבהם יש הגעה
+            except:
+                pass
+    return "ללא ETA"
 
 # ==========================================================
 # APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
@@ -382,7 +410,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת שולפת אוטומטית את ה-ETA האמיתי מהמסד נתונים, מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת סורקת אוטומטית את עמודות ה-ETA באקסל (CC עד CZ) ואת שורת התאריכים כדי לזהות את מועד ההגעה הראשון של כל רכיב חסר. הפריט הקריטי מודגש ב-**BOLD**.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -408,19 +436,16 @@ with tab2:
             c_desc = str(s_row["Description"]).strip()
             s_qty = s_row["Total_MRP_Shortage"]
             
-            # שליפת ה-ETA האמיתי והמעודכן מבסיס הנתונים המקומי
-            _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
+            # קריאה לפונקציה ששולפת את מועד ההגעה הראשון מעמודות CC-CZ באקסל
+            eta_display_str = get_first_supply_eta(c_pn)
             
-            if eta_val and str(eta_val).strip() not in ["", "None", "NaT", "nan"]:
+            if eta_display_str != "ללא ETA":
                 try:
-                    eta_dt = pd.to_datetime(eta_val).date()
-                    eta_display_str = str(eta_val)
+                    eta_dt = pd.to_datetime(eta_display_str).date()
                 except:
                     eta_dt = date(2099, 12, 31)
-                    eta_display_str = str(eta_val)
             else:
                 eta_dt = date(2099, 12, 31)
-                eta_display_str = "ללא ETA"
 
             missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
 
