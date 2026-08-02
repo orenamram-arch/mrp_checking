@@ -1,37 +1,46 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת: מיפוי מדויק של חודשים ואינדקסים באופק התוכנית (כולל תיקון ספירת החוסרים).
+גרסה המבוססת במדויק על לוגיקת המקור של המשתמש + שילוב לשוניות What-If, CTB ו-Kanban.
 
 הרצה:
 streamlit run mrp_app.py
 """
 
-import json
-import os
+import streamlit as st
+import pandas as pd
+import plotly.express as px
 import sqlite3
 from datetime import datetime, date
 import io
+import requests
+import json
+import random
 
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import streamlit as st
-
-# ==========================================================================
-# 1. תצורה וכתובות
-# ==========================================================================
+# ==========================================================
+# CONFIGURATION
+# ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
-    page_title="MRP Control Tower & Decision Hub",
-    page_icon="📦",
+    page_title="MRP Executive Control Tower",
+    page_icon="🚀",
     layout="wide"
 )
 
-# ==========================================================================
-# 2. שכבת שמירה ו-SQLite
-# ==========================================================================
+# CSS להתאמה למצב Dark/Light ולעיצוב נקי
+st.markdown("""
+<style>
+.stMetric { border: 1px solid rgba(128,128,128,0.2); border-radius: 8px; padding: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🚀 MRP Executive Control Tower & Decision Hub")
+st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהולית (Executive Summary)")
+
+# ==========================================================
+# LOCAL DATABASE SETUP (Persistent Storage)
+# ==========================================================
 conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
 
 conn.execute("""
@@ -90,14 +99,21 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
     """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
     
     conn.commit()
+    
+    if webhook_url:
+        msg = "🔔 עדכון מלאי/ETA למוצר!\nמק\"ט: " + str(pn) + "\nתוספת מלאי: " + str(added_stock) + "\nסטטוס: " + str(status) + "\nETA: " + str(eta)
+        try:
+            requests.post(webhook_url, data=json.dumps({"text": msg}), headers={'Content-Type': 'application/json'})
+        except:
+            pass
 
 def delete_inventory_record(pn):
     conn.execute("DELETE FROM inventory_updates WHERE pn = ?", (pn,))
     conn.commit()
 
-# ==========================================================================
-# 3. טעינת נתונים מ-GitHub
-# ==========================================================================
+# ==========================================================
+# DATA LOADING FROM GITHUB
+# ==========================================================
 @st.cache_data
 def load_data(url):
     df = pd.read_excel(url, header=29)
@@ -115,9 +131,9 @@ except Exception as e:
     st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
     st.stop()
 
-# ==========================================================================
-# 4. חילוץ תוכנית ייצור והרכבות
-# ==========================================================================
+# ==========================================================
+# EXTRACT ASSEMBLY MONTHLY BUILD PLAN & BOM LEVELS
+# ==========================================================
 header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
 plan_rows = []
 
@@ -169,18 +185,26 @@ for col in valid_assemblies:
     except:
         assembly_levels[col] = 0
 
+asm_components = {}
+for col in valid_assemblies:
+    asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
+
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
 def get_first_supply_eta(pn):
+    # 1. קודם כל נבדוק אם יש עדכון ידני בבסיס הנתונים המקומי
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
         
+    # 2. אם אין עדכון ידני, נחפש את שורת הפריט בטבלה הגולמית
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
-        for col_pos in range(80, min(108, max_cols)):
+        
+        # נסרוק את כל עמודות האספקה החל מעמודה 50 ועד הסוף כדי לא לפספס כלום
+        for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
                 if pd.notnull(val) and val != '' and val != 'NaN':
@@ -189,15 +213,29 @@ def get_first_supply_eta(pn):
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
                             dt = pd.to_datetime(date_val, errors='coerce')
-                            if pd.notnull(dt) and dt.year >= 2024:
-                                return dt.strftime("%Y-%m")
+                            if pd.notnull(dt):
+                                # בדיקה האם התאריך הגיוני (משנת 2024 ומעלה)
+                                if dt.year >= 2024:
+                                    return dt.strftime("%Y-%m")
             except:
                 pass
-    return "ללא ETA"
+                
+    # אם באמת אין שום תאריך באקסל, נחזיר מחרוזת ריקה במקום "ללא ETA" כדי שלא יופיע מיותר
+    return "בדיקה נדרשת"
 
-# ==========================================================================
-# 5. סיידבר ומסננים (זיהוי חודשים מדויק)
-# ==========================================================================
+# ==========================================================
+# APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
+# ==========================================================
+for idx, row in df.iterrows():
+    pn = str(row[PN_COL]).strip()
+    saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
+    if saved_stock_add > 0:
+        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+        df.at[idx, STOCK_COL] = base_stock + saved_stock_add
+
+# ==========================================================
+# SIDEBAR FILTERS & WHAT-IF CONTROLS
+# ==========================================================
 st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
 supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
@@ -224,17 +262,6 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-# ווידוא התאמה מדויקת לעמודת החודש הספציפית בגיליון אם זו עמודה ממופה
-actual_month_col = selected_month_col
-for c in MONTH_COLS:
-    if pd.notnull(c):
-        try:
-            if pd.to_datetime(c).strftime("%Y-%m") == selected_ym:
-                actual_month_col = c
-                break
-        except:
-            pass
-
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
 
@@ -259,69 +286,75 @@ selected_assembly = st.sidebar.selectbox(
 )
 
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
-selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types)
+selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
-selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר מק\"ט/תיאור", item_choices)
+selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק\"ט/תיאור)", item_choices)
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
-# ==========================================================================
-# 6. לוגיקת החוסרים המדויקת לפי החודש הנבחר
-# ==========================================================================
-def calculate_shortages_for_stock(extra_stock_dict=None):
-    extra_stock_dict = extra_stock_dict or {}
+# ==========================================================
+# CORE LOGIC FOR SHORTAGES (WRAPPED IN FUNCTION FOR WHAT-IF)
+# ==========================================================
+def calculate_mrp_breakdown(sim_extra_stock=None):
+    if sim_extra_stock is None:
+        sim_extra_stock = {}
+        
     temp_df = df.copy()
+    temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
     
-    month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
-    plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
-
-    b_rows = []
-    temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[actual_month_col], errors='coerce').fillna(0)
+    # Apply simulated stock
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
-        sim_add = extra_stock_dict.get(pn, 0.0)
-        total_add = saved_stock_add + sim_add
-        if total_add > 0:
+        sim_val = sim_extra_stock.get(pn, 0.0)
+        
+        # Already applied real saved_stock in main loop, here we only add What-If stock
+        if sim_val > 0:
             current_bal = temp_df.at[idx, 'Monthly_Balance']
             if current_bal < 0:
-                temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_add
+                temp_df.at[idx, 'Monthly_Balance'] = current_bal + sim_val
 
+    # Exact logic provided by user
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
+    month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
+    plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
+
+    breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
         pn = str(row[PN_COL]).strip()
-        desc = str(row[DESC_COL]) if pd.notnull(row[DESC_COL]) else ""
-        item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns and pd.notnull(row[ITEM_TYPE_COL]) else ""
+        desc = str(row[DESC_COL])
+        item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
         stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
-        sim_add = extra_stock_dict.get(pn, 0.0)
-        total_available_stock = stock + saved_stock_add + sim_add
+        total_mrp_shortage = row['Total_MRP_Shortage']
         
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn)
+        matched_any = False
         
         for asm in filtered_assembly_cols:
             qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
             if qty_per_asm > 0:
+                matched_any = True
                 asm_build_qty = plan_dict.get(asm, 0.0)
                 required_demand = qty_per_asm * asm_build_qty
-                if required_demand <= 0:
-                    continue
-                
-                specific_shortage = max(0.0, required_demand - total_available_stock)
-                if specific_shortage <= 0:
-                    continue
-                
                 asm_desc = assembly_mapping.get(asm, asm)
-                b_rows.append({
+                
+                breakdown_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
                     "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
-                    "Stock": total_available_stock, "Total_MRP_Shortage": specific_shortage
+                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
                 })
+                
+        if not matched_any and selected_assembly == "הכל" and selected_level == "הכל":
+            breakdown_rows.append({
+                "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
+                "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
+                "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+            })
 
-    res_df = pd.DataFrame(b_rows)
+    res_df = pd.DataFrame(breakdown_rows)
+    
     if not res_df.empty:
         if selected_item_type != "הכל":
             res_df = res_df[res_df["Item_Type"] == selected_item_type]
@@ -329,17 +362,16 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
             res_df = res_df[res_df["Assembly"] == selected_assembly]
         if search_pn != "הכל":
             res_df = res_df[res_df["PN"] == search_pn]
+            
     return res_df
 
-breakdown_df = calculate_shortages_for_stock()
+# מחשב את הנתונים הנוכחיים להצגה
+breakdown_df = calculate_mrp_breakdown()
 
-# ==========================================================================
-# 7. ממשק משתמש ולשוניות
-# ==========================================================================
-st.title("🚀 MRP Executive Control Tower & Decision Hub")
-st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהלית")
-
-TABS = st.tabs([
+# ==========================================================
+# TABS
+# ==========================================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 Executive Dashboard", 
     "📊 תוכנית ייצור (Smart CTB)", 
     "💡 סימולציית What-If",
@@ -348,7 +380,7 @@ TABS = st.tabs([
     "↩️ ניהול UNDO"
 ])
 
-with TABS[0]:
+with tab1:
     st.subheader(f"🎯 תמונת מצב ניהלית (Executive Summary) לחודש: {selected_month_label}")
     
     dash_df = breakdown_df.copy()
@@ -361,7 +393,7 @@ with TABS[0]:
     readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
 
     col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-    col_k1.metric("🟢 מוכנות קווי ייצור", f"{readiness_pct:.1f}%", f"{ready_assemblies}/{total_planned_assemblies} הרכבות מוכנות")
+    col_k1.metric("🟢 מוכנות קווי ייצור (Readiness)", f"{readiness_pct:.1f}%", f"{ready_assemblies}/{total_planned_assemblies} הרכבות מוכנות")
     col_k2.metric("🔴 הרכבות חסומות בחודש", blocked_assemblies)
     col_k3.metric("📦 סה\"כ מק\"טים בגירעון", len(dash_df['PN'].unique()) if not dash_df.empty else 0)
     col_k4.metric("📊 כמות גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0")
@@ -373,7 +405,7 @@ with TABS[0]:
         
         with col_g1:
             st.markdown("### 🥧 התפלגות חוסרים לפי סוג פריט")
-            fig_pie = px.pie(dash_df, names="Item_Type", values="Total_MRP_Shortage", hole=0.4)
+            fig_pie = px.pie(dash_df, names="Item_Type", values="Total_MRP_Shortage", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
             st.plotly_chart(fig_pie, use_container_width=True)
             
         with col_g2:
@@ -399,12 +431,12 @@ with TABS[0]:
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc", 
             "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage"
         ]].rename(columns={
-            "PN": "מק״ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
+            "PN": "מק\"ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
             "Status": "סטטוס טיפול", "Assembly": "קוד הרכבה", "Assembly_Desc": "תיאור הרכבה",
             "Qty_Per_Assembly": "כמות נדרשת", "Assembly_Monthly_Build": "ת. ייצור",
-            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי זמין", "Total_MRP_Shortage": "חוסר מדויק"
+            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי", "Total_MRP_Shortage": "סך חוסר"
         })
-        st.dataframe(display_df.sort_values(by="חוסר מדויק", ascending=False), use_container_width=True)
+        st.dataframe(display_df.sort_values(by="סך חוסר", ascending=False), use_container_width=True)
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -418,11 +450,11 @@ with TABS[0]:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.success("🎉 אין חוסרים אמיתיים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
+        st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
-with TABS[1]:
+with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מציגה את הרכיבים החסרים בלבד, את ה-ETA המדויק, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק של הרכיבים החסרים ומדגישה ב-**BOLD** את הפריט הקריטי.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -447,12 +479,10 @@ with TABS[1]:
             c_pn = str(s_row["PN"]).strip()
             c_desc = str(s_row["Description"]).strip()
             s_qty = s_row["Total_MRP_Shortage"]
-            if s_qty <= 0:
-                continue
-                
+            
             eta_display_str = get_first_supply_eta(c_pn)
             
-            if eta_display_str and eta_display_str != "ללא ETA":
+            if eta_display_str and eta_display_str != "בדיקה נדרשת":
                 try:
                     eta_dt = pd.to_datetime(eta_display_str).date()
                 except:
@@ -470,7 +500,7 @@ with TABS[1]:
 
         formatted_missing = []
         for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "ללא ETA" else ""
+            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
             item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
             
             if c_pn == most_critical_pn:
@@ -496,73 +526,81 @@ with TABS[1]:
     else:
         st.info(f"לא נמצאו הרכבות מתוכננות לייצור לחודש {selected_month_label}.")
 
-with TABS[2]:
-    st.subheader("💡 סימולציית What-If (מה יקרה אם...) מתקדמת")
-    st.markdown("בחר מק\"ט והזן תוספת מלאי מדומה. המערכת תחשב מיד אילו הרכבות משתחררות לייצור ואיזה פריט חוסר עדיין מעכב את השאר.")
+with tab3:
+    st.subheader("💡 סימולציית What-If (מה יקרה אם...)")
+    st.markdown("כלי אינטראקטיבי לקבלת החלטות: בדוק כיצד הוספת מלאי או הקדמת אספקה משחררת את קווי הייצור בזמן אמת בישיבה.")
     
     col_w1, col_w2 = st.columns(2)
     with col_w1:
         sim_pn = st.selectbox("בחר מק\"ט לסימולציה", sorted(df[PN_COL].dropna().astype(str).unique()), key="sim_pn")
     with col_w2:
-        sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי", min_value=0.0, value=10.0, step=1.0)
+        sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי לצורך סימולציה", min_value=0.0, value=10.0, step=1.0)
 
-    original_blocked_assemblies = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
-    sim_breakdown_df = calculate_shortages_for_stock({sim_pn: sim_extra_stock})
-    sim_blocked_assemblies = set(sim_breakdown_df['Assembly'].unique()) if not sim_breakdown_df.empty else set()
-
-    freed_assemblies = original_blocked_assemblies - sim_blocked_assemblies
-
-    st.divider()
-    col_res1, col_res2 = st.columns(2)
-    with col_res1:
-        st.markdown("### 🟢 הרכבות שמשתחררות כעת במלואן לייצור:")
-        if freed_assemblies:
-            for asm in freed_assemblies:
-                asm_desc = assembly_mapping.get(asm, asm)
-                st.success(f"✔️ **{asm_desc}** מוכנה כעת לייצור מלא!")
-        else:
-            st.info("אין הרכבות שעוברות ממצב חסום למוכנות מלאה בעקבות התוספת הזו.")
-
-    with col_res2:
-        st.markdown("### 🔴 פריטים נוספים שעדיין חוסמים הרכבות אלו (אם קיימים):")
-        if not sim_breakdown_df.empty:
-            related_asm = breakdown_df[breakdown_df["PN"] == sim_pn]["Assembly"].unique()
-            remaining_blockers = sim_breakdown_df[sim_breakdown_df["Assembly"].isin(related_asm)]
-            if not remaining_blockers.empty:
-                for _, r in remaining_blockers.iterrows():
-                    st.warning(f"מק\"ט חוסר נוסף: `{r['PN']}` ({r['Description'][:15]}) בהרכבה {r['Assembly']} - חסר: {r['Total_MRP_Shortage']:g}")
+    if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
+        # חישוב תוצאת הסימולציה מול המצב הקיים
+        sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock})
+        
+        orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
+        sim_blocked = set(sim_df['Assembly'].unique()) if not sim_df.empty else set()
+        freed_assemblies = orig_blocked - sim_blocked
+        
+        st.success(f"סימולציה הופעלה בהצלחה עבור מק\"ט `{sim_pn}` עם תוספת של {sim_extra_stock} יחידות.")
+        
+        st.divider()
+        col_res1, col_res2 = st.columns(2)
+        with col_res1:
+            st.markdown("### 🟢 קווי הרכבה שישתחררו לייצור מלא:")
+            if freed_assemblies:
+                for asm in freed_assemblies:
+                    st.success(f"✔️ **{assembly_mapping.get(asm, asm)}** - מוכנה לייצור!")
             else:
-                st.success("אין פריטים נוספים שחוסמים את ההרכבות הרלוונטיות!")
-        else:
-            st.success("🎉 כל ההרכבות משוחררות ומוכנות לייצור מלא בעקבות הסימולציה!")
+                st.info("אין הרכבות שעוברות למוכנות מלאה בעקבות תוספת זו (יתכן שנדרשים פריטים נוספים).")
+        
+        with col_res2:
+            st.markdown("### 🔴 צווארי בקבוק חלופיים שעדיין תוקעים הרכבות אלו:")
+            if not sim_df.empty:
+                related_asm = breakdown_df[breakdown_df["PN"] == sim_pn]["Assembly"].unique()
+                remaining = sim_df[sim_df["Assembly"].isin(related_asm)]
+                if not remaining.empty:
+                    for _, r in remaining.iterrows():
+                        st.warning(f"מק\"ט: `{r['PN']}` בהרכבה {r['Assembly']} - חסר: {r['Total_MRP_Shortage']:g}")
+                else:
+                    st.success("אין פריטים נוספים שתוקעים את ההרכבות הרלוונטיות!")
+            else:
+                st.success("הסימולציה שחררה את כלל הפריטים במערכת!")
 
-with TABS[3]:
+with tab4:
     st.subheader("📌 לוח מעקב סטטוסים (Kanban Pipeline)")
     st.markdown("מעקב ויזואלי אחר התקדמות הטיפול במק\"טים הגירעוניים מול ספקים ורכש.")
     
     k_col1, k_col2, k_col3, k_col4 = st.columns(4)
     with k_col1:
-        st.markdown("### 📝 פתוח")
+        st.markdown("### 📝 פתוח לטיפול")
         open_items = breakdown_df[breakdown_df["Status"] == "פתוח"] if not breakdown_df.empty else pd.DataFrame()
-        for _, r in open_items.head(6).iterrows():
-            st.warning(f"**{r['PN']}**\n\n{r['Description'][:22]}")
+        # קיבוץ לפי מק"ט למניעת כפילויות בלוח הקנבן
+        if not open_items.empty: open_items = open_items.drop_duplicates(subset=["PN"])
+        for _, r in open_items.head(5).iterrows():
+            st.warning(f"**{r['PN']}**\n\n{r['Description'][:20]}")
     with k_col2:
-        st.markdown("### 🛒 הוזמן / בטיפול")
-        ordered_items = breakdown_df[breakdown_df["Status"].isin(["הוזמן", "בטיפול", "בייצור"])] if not breakdown_df.empty else pd.DataFrame()
-        for _, r in ordered_items.head(6).iterrows():
-            st.info(f"**{r['PN']}**\n\n{r['Description'][:22]}")
+        st.markdown("### 🛒 הוזמן / בטיפול רכש")
+        ordered_items = breakdown_df[breakdown_df["Status"] == "הוזמן"] if not breakdown_df.empty else pd.DataFrame()
+        if not ordered_items.empty: ordered_items = ordered_items.drop_duplicates(subset=["PN"])
+        for _, r in ordered_items.head(5).iterrows():
+            st.info(f"**{r['PN']}**\n\n{r['Description'][:20]}")
     with k_col3:
         st.markdown("### 🚚 בדרך לקו")
         shipping_items = breakdown_df[breakdown_df["Status"] == "בדרך"] if not breakdown_df.empty else pd.DataFrame()
-        for _, r in shipping_items.head(6).iterrows():
-            st.success(f"**{r['PN']}**\n\n{r['Description'][:22]}")
+        if not shipping_items.empty: shipping_items = shipping_items.drop_duplicates(subset=["PN"])
+        for _, r in shipping_items.head(5).iterrows():
+            st.success(f"**{r['PN']}**\n\n{r['Description'][:20]}")
     with k_col4:
         st.markdown("### ✅ התקבל / סגור")
         received_items = breakdown_df[breakdown_df["Status"] == "התקבל"] if not breakdown_df.empty else pd.DataFrame()
-        for _, r in received_items.head(6).iterrows():
+        if not received_items.empty: received_items = received_items.drop_duplicates(subset=["PN"])
+        for _, r in received_items.head(5).iterrows():
             st.success(f"**{r['PN']}** (התקבל)")
 
-with TABS[4]:
+with tab5:
     st.subheader("📅 עדכון מלאי, ETA וקבלני משנה")
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()))
     
@@ -577,7 +615,7 @@ with TABS[4]:
                 except: parsed_eta = date.today()
                 eta_date = st.date_input("תאריך הגעה (ETA)", value=parsed_eta)
             with col_f3:
-                status_options = ["פתוח", "בטיפול", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
+                status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
                 status_idx = status_options.index(saved_status) if saved_status in status_options else 0
                 status = st.selectbox("סטטוס טיפול", status_options, index=status_idx)
 
@@ -593,7 +631,7 @@ with TABS[4]:
                 st.success("נשמר בהצלחה!")
                 st.rerun()
 
-with TABS[5]:
+with tab6:
     st.subheader("↩️ חזרה לאחור וניהול היסטוריה (UNDO)")
     history_cur = conn.cursor()
     history_cur.execute("SELECT pn, added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates ORDER BY updated_at DESC")
