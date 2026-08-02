@@ -7,10 +7,10 @@ from datetime import datetime, date
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
-# החלף את הקישור הזה בקישור הישיר (Raw URL) לקובץ שלך ב-GitHub
-GITHUB_URL = "https://raw.githubusercontent.com/YourUsername/YourRepo/main/mrp_2.xlsx"
+# הקישור הישיר (Raw) לקובץ מתוך GitHub שסיפקת
+GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 
-# שם הקובץ המקומי שייווצר אוטומטית כדי לשמור את העדכונים שלך
+# שם הקובץ המקומי שייווצר אוטומטית לשמירת העדכונים שלך
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
@@ -73,12 +73,10 @@ def eta_color(eta_value):
 # ==========================================================
 @st.cache_data
 def load_data(url):
-    # קריאת הנתונים מהקישור ב-GitHub
     df = pd.read_excel(url, header=29)
     df_levels = pd.read_excel(url, header=None, skiprows=28, nrows=1)
     df_desc = pd.read_excel(url, header=None, skiprows=27, nrows=1)
     
-    # ניקוי שמות עמודות
     df.columns = [str(c).strip() if pd.notnull(c) else c for c in df.columns]
     return df, df_levels, df_desc
 
@@ -86,7 +84,7 @@ try:
     with st.spinner('טוען נתוני MRP מ-GitHub...'):
         df, df_levels, df_desc = load_data(GITHUB_URL)
 except Exception as e:
-    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. ודא שהקישור הוא מסוג Raw ושהקובץ נגיש.\nפירוט השגיאה: {e}")
+    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. ודא שהקישור הוא מסוג Raw ושהמאגר ציבורי.\nפירוט השגיאה: {e}")
     st.stop()
 
 # ==========================================================
@@ -186,7 +184,6 @@ else:
 st.divider()
 st.subheader("📅 ניהול ומעקב ETA (נשמר מקומית)")
 
-# טופס העדכון
 pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
 selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס", pn_values)
 record = get_eta_record(selected_pn)
@@ -206,7 +203,6 @@ if save_btn:
     save_eta_record(selected_pn, str(eta_date), status, comment, updated_by)
     st.success("העדכון נשמר בהצלחה בקובץ המקומי!")
 
-# טבלת המעקב מתוך מסד הנתונים המקומי
 st.subheader("🚦 טבלת סטטוסים שמורים")
 eta_rows = []
 for pn in pn_values:
