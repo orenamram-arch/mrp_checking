@@ -334,13 +334,11 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader(f"📈 דשבורד חוסרים לחודש: {selected_month_label}")
     
-    # סינון הנתונים בדשבורד אם נבחרה הרכבה ספציפית
     dash_df = breakdown_df.copy()
     if selected_assembly != "הכל":
         dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
-        st.info(ف"🎯 מציג חוסרים ממוקדים עבור הרכבה: {assembly_mapping.get(selected_assembly, selected_assembly)}")
+        st.info(f"🎯 מציג חוסרים ממוקדים עבור הרכבה: {assembly_mapping.get(selected_assembly, selected_assembly)}")
 
-    # כרטיסי KPI ויזואליים
     col_k1, col_k2, col_k3, col_k4 = st.columns(4)
     total_shortage_items = len(dash_df['PN'].unique()) if not dash_df.empty else 0
     total_shortage_qty = dash_df['Total_MRP_Shortage'].sum() if not dash_df.empty else 0
@@ -353,7 +351,6 @@ with tab1:
     st.divider()
 
     if not dash_df.empty and len(dash_df) > 0:
-        # אזור גרפים ויזואליים
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
@@ -544,3 +541,4 @@ with tab5:
                 st.divider()
     else:
         st.info("אין עדכונים במערכת.")
+        
