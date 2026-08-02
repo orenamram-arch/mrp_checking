@@ -510,7 +510,6 @@ with TABS[2]:
     with col_w2:
         sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי", min_value=0.0, value=10.0, step=1.0)
 
-    # חישוב מצב לפני סימולציה ומצב אחרי סימולציה
     original_blocked_assemblies = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
     sim_breakdown_df = calculate_shortages_for_stock({sim_pn: sim_extra_stock})
     sim_blocked_assemblies = set(sim_breakdown_df['Assembly'].unique()) if not sim_breakdown_df.empty else set()
@@ -531,7 +530,6 @@ with TABS[2]:
     with col_res2:
         st.markdown("### 🔴 פריטים נוספים שעדיין חוסמים הרכבות אלו (אם קיימים):")
         if not sim_breakdown_df.empty:
-            # מציג את החסמים המרכזיים שנותרו עבור ההרכבות הקשורות
             related_asm = breakdown_df[breakdown_df["PN"] == sim_pn]["Assembly"].unique()
             remaining_blockers = sim_breakdown_df[sim_breakdown_df["Assembly"].isin(related_asm)]
             if not remaining_blockers.empty:
@@ -617,4 +615,10 @@ with TABS[5]:
                     st.text(f"תוספת: {i_stock} | ETA: {i_eta}")
                     st.text(f"עודכן ע\"י: {i_by} ({i_time})")
                 with col_u3:
-                    if st.button("🔄 UNDO", key=f"undo_{i_pn}
+                    if st.button("🔄 UNDO", key=f"undo_{i_pn}"):
+                        delete_inventory_record(i_pn)
+                        st.success("בוטל בהצלחה!")
+                        st.rerun()
+                st.divider()
+    else:
+        st.info("אין עדכונים במערכת.")
