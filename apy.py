@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה משופרת הכוללת ניהול קפדני לפי עמודות אקסל מדויקות, מנוע MRP כרונולוגי,
-סימולציות What-If, לוח Kanban ניהולות ותמיכה מלאה בבסיס נתונים מקומי.
+סימולציות What-If, לוח Kanban ניהולות ותמיכה מלאה בהתאמת צבעים אוטומטית (Light/Dark).
 
 הרצה:
 streamlit run mrp_app.py
@@ -55,7 +55,7 @@ MONTHS = [f"{m:02d}/{y}" for y in (26, 27) for m in range(1, 13)]
 st.set_page_config(page_title="MRP Control Tower", page_icon="📦", layout="wide")
 
 # ==========================================================================
-# 2. עיצוב
+# 2. עיצוב אוטומטי מותאם מול ערכת הנושא של Streamlit (Light / Dark)
 # ==========================================================================
 CSS = """
 <style>
@@ -63,73 +63,47 @@ CSS = """
 html, body, [class*="css"], .stApp {
     font-family: 'Heebo', sans-serif; 
 }
-.stApp {
-    background:#0B1114; color:#E6EFF2; 
-}
-section[data-testid="stSidebar"] { 
-    background:#0F171B; border-left:1px solid #22323A; 
-}
-h1, h2, h3 { 
-    color:#E6EFF2 !important; letter-spacing:-.01em; 
-}
 .hero {
-    background:linear-gradient(135deg,#101A1F,#16262F); border:1px solid #2E434D;
-    border-radius:12px; padding:18px 22px; margin-bottom:16px; 
+    background: linear-gradient(135deg, rgba(78, 168, 222, 0.1), rgba(49, 195, 154, 0.05));
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px; 
 }
 .hero h1 {
-    font-size:25px; font-weight:900; margin:0; 
+    font-size: 25px; font-weight: 900; margin: 0; 
 }
 .hero p {
-    color:#8DA6B1; font-size:13px; margin:5px 0 0; 
+    font-size: 13px; margin: 5px 0 0; opacity: 0.8; 
 }
 div[data-testid="stMetric"] { 
-    background:#131C21; border:1px solid #22323A;
-    border-radius:10px; padding:13px 15px; 
-}
-div[data-testid="stMetricLabel"] { 
-    color:#5E7885 !important; font-size:11px !important;
-    letter-spacing:.06em; 
-}
-div[data-testid="stMetricValue"] { 
-    font-size:26px !important; font-weight:700 !important; 
+    border-radius: 10px;
+    padding: 13px 15px;
+    border: 1px solid rgba(128, 128, 128, 0.2);
 }
 .stTabs [data-baseweb="tab-list"] { 
-    gap:2px; border-bottom:1px solid #22323A; 
+    gap: 2px;
 }
 .stTabs [data-baseweb="tab"] { 
-    background:transparent; color:#8DA6B1; border-radius:7px 7px 0 0;
-    padding:9px 17px; font-size:13.5px; 
-}
-.stTabs [aria-selected="true"] { 
-    background:#131C21 !important; color:#fff !important;
-    border-bottom:2px solid #4EA8DE; 
+    border-radius: 7px 7px 0 0;
+    padding: 9px 17px;
+    font-size: 13.5px; 
 }
 .stDataFrame {
-    border:1px solid #22323A; border-radius:9px; 
-}
-.note { 
-    color:#8DA6B1; font-size:12.5px; 
-}
-.mono {
-    font-family:'IBM Plex Mono',monospace; 
-}
-div[data-testid="stAlert"] { 
-    border-radius:9px; 
+    border-radius: 9px; 
 }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-PALETTE = dict(bad="#FF5C42", warn="#F5A623", ok="#31C39A", cool="#4EA8DE",
-             ink="#E6EFF2", mute="#8DA6B1", panel="#131C21", line="#22323A")
+# פלטת צבעים שמתאימה את עצמה אוטומטית לגרפים (Plotly)
+PALETTE = dict(bad="#FF5C42", warn="#F5A623", ok="#31C39A", cool="#4EA8DE")
 
 def style_fig(fig, h=330):
     fig.update_layout(
         height=h, margin=dict(l=8, r=8, t=28, b=8),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Heebo", color=PALETTE["mute"], size=12),
-        xaxis=dict(gridcolor=PALETTE["line"], zerolinecolor=PALETTE["line"]),
-        yaxis=dict(gridcolor=PALETTE["line"], zerolinecolor=PALETTE["line"]),
+        font=dict(family="Heebo", size=12),
         legend=dict(bgcolor="rgba(0,0,0,0)"),
     )
     return fig
@@ -471,7 +445,7 @@ with TABS[0]:
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             st.markdown("### 🥧 התפלגות חוסרים לפי סוג פריט")
-            fig_pie = px.pie(dash_df, names="cls", values="value", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+            fig_pie = px.pie(dash_df, names="cls", values="value", hole=0.4)
             st.plotly_chart(style_fig(fig_pie, 330), use_container_width=True)
             
         with col_g2:
@@ -507,7 +481,7 @@ with TABS[1]:
     mat = pd.DataFrame({MONTHS[m]: [MRP["shortage_units"][a["pn"]][m] for a in asm_pool]
                           for m in active},
 index=[a["name"] for a in asm_pool])
-    st.dataframe(mat.style.background_gradient(cmap="Reds", axis=None).format("{:,.0f}"), use_container_width=True)
+    st.dataframe(mat.style.format("{:,.0f}"), use_container_width=True)
     
     st.subheader("חוסר ביחידות רכיב")
     if ROWS.empty:
@@ -517,7 +491,7 @@ index=[a["name"] for a in asm_pool])
         piv = (base[base["m"].isin(active)]
                .pivot_table(index="asm_name", columns="month", values="short", aggfunc="sum")
                .reindex(columns=[MONTHS[m] for m in active]).fillna(0))
-        st.dataframe(piv.style.background_gradient(cmap="Oranges", axis=None).format("{:,.0f}"), use_container_width=True)
+        st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ---------- 10.2 מוכנות ו-CTB ----------
 with TABS[2]:
