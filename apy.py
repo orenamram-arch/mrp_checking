@@ -43,16 +43,24 @@ st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap');
 
-html, body, [class*="css"]  {{
+/* חשוב: ה-RTL מוגבל לתוכן הראשי בלבד (ולא לכל ה-DOM כולל ה-sidebar החיצוני),
+   כי הפעלת direction:rtl על הקונטיינר החיצוני של הסיידבר שוברת את אנימציית
+   ה-slide (transform) שלו במובייל וגורמת לו "להיתקע" באמצע המסך. */
+[data-testid="stAppViewContainer"] .main .block-container,
+[data-testid="stSidebarContent"] {{
     font-family: 'Assistant', sans-serif;
     direction: rtl;
+}}
+[data-testid="stAppViewContainer"] .main .block-container * ,
+[data-testid="stSidebarContent"] * {{
+    font-family: 'Assistant', sans-serif;
 }}
 
 /* Hide default streamlit chrome a bit */
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 
-/* Header banner */
+/* Header banner - צבעי גרדיאנט קבועים, טקסט לבן קריא תמיד בכל תמה */
 .hero-banner {{
     background: linear-gradient(120deg, {PRIMARY} 0%, {PRIMARY_DARK} 45%, {ACCENT} 100%);
     padding: 28px 32px;
@@ -72,14 +80,16 @@ footer {{visibility: hidden;}}
     margin-top: 6px;
 }}
 
-/* KPI cards */
+/* KPI cards - משתמשים במשתני התמה של Streamlit, כך שהצבעים מתאימים אוטומטית
+   לטתמה הבהירה/כהה שהמשתמש בוחר (כולל "Auto" לפי המערכת) */
 .kpi-card {{
-    background: {BG_CARD};
-    border: 1px solid rgba(255,255,255,0.07);
+    background: var(--secondary-background-color, #161B2E);
+    color: var(--text-color, inherit);
+    border: 1px solid rgba(128,128,128,0.25);
     border-radius: 14px;
     padding: 18px 16px;
     text-align: center;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
     transition: transform 0.15s ease;
 }}
 .kpi-card:hover {{ transform: translateY(-3px); }}
@@ -111,6 +121,7 @@ footer {{visibility: hidden;}}
     margin: 18px 0 10px 0;
     border-right: 4px solid {PRIMARY};
     padding-right: 10px;
+    color: var(--text-color, inherit);
 }}
 
 /* Kanban columns */
@@ -123,7 +134,9 @@ footer {{visibility: hidden;}}
     text-align: center;
 }}
 .kanban-card {{
-    background: {BG_CARD};
+    background: var(--secondary-background-color, #161B2E);
+    color: var(--text-color, inherit);
+    border: 1px solid rgba(128,128,128,0.2);
     border-radius: 10px;
     padding: 10px 12px;
     margin-bottom: 8px;
@@ -132,6 +145,28 @@ footer {{visibility: hidden;}}
 }}
 
 .stMetric {{ border: 1px solid rgba(128,128,128,0.2); border-radius: 8px; padding: 10px; }}
+
+/* ===================== מובייל ===================== */
+@media (max-width: 640px) {{
+    .hero-banner {{ padding: 18px 16px; border-radius: 14px; }}
+    .hero-banner h1 {{ font-size: 21px; }}
+    .hero-banner p {{ font-size: 13px; }}
+
+    .kpi-value {{ font-size: 22px; }}
+    .kpi-label {{ font-size: 12px; }}
+    .kpi-card {{ padding: 14px 10px; }}
+
+    .section-title {{ font-size: 16px; }}
+
+    /* גורם לעמודות (KPI / גרפים) להיערם אנכית זו מתחת לזו במקום להצטופף לרוחב */
+    [data-testid="stHorizontalBlock"] {{
+        flex-wrap: wrap !important;
+    }}
+    [data-testid="column"] {{
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -153,7 +188,11 @@ def kpi_card(label, value, sub="", color="blue"):
     """, unsafe_allow_html=True)
 
 
-PLOTLY_TEMPLATE = "plotly_dark"
+try:
+    _theme_base = st.get_option("theme.base")
+except Exception:
+    _theme_base = None
+PLOTLY_TEMPLATE = "plotly_white" if _theme_base == "light" else "plotly_dark"
 COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#34D399"]
 
 # ==========================================================
