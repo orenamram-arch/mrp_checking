@@ -6,25 +6,48 @@ from datetime import datetime, date
 import io
 
 # ==========================================================
-# CONFIGURATION
+# CONFIGURATION & LOGIN SYSTEM
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
-    page_title="MRP Control Tower",
+    page_title="MRP Control Tower & Supplier Management",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📊 MRP Control Tower & Shortage Management")
-st.markdown("מערכת ניהול חוסרים מתקדמת הכוללת פילוח הרכבות, מעקב ספקים (אופק), גרפי מגמות וייצוא נתונים")
+# מנגנון אבטחה והתחברות בסיסי
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == "ELTA2026": # סיסמה לדוגמה, ניתן לשנות
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("הכנס סיסמת כניסה למערכת:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("הכנס סיסמת כניסה למערכת:", type="password", on_change=password_entered, key="password")
+        st.error("😕 סיסמה שגויה")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+
+st.title("📊 MRP Control Tower & Advanced Supply Chain")
+st.markdown("מערכת ניהול חוסרים מתקדמת הכוללת מעקב קבלני משנה (אופק), היסטוריית שינויים, רמות עץ וייצוא נתונים")
 
 # ==========================================================
-# LOCAL DATABASE SETUP (For ETA & Supplier Updates)
+# LOCAL DATABASE SETUP (Audit Trail & Suppliers)
 # ==========================================================
 conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
 
+# טבלת סטטוסים נוכחיים
 conn.execute("""
 CREATE TABLE IF NOT EXISTS eta_updates
 (
@@ -37,28 +60,48 @@ CREATE TABLE IF NOT EXISTS eta_updates
     updated_at TEXT
 )
 """)
+
+# טבלת היסטוריית שינויים מלאה (Audit Trail)
+conn.execute("""
+CREATE TABLE IF NOT EXISTS eta_history
+(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pn TEXT,
+    eta TEXT,
+    status TEXT,
+    supplier TEXT,
+    comment TEXT,
+    updated_by TEXT,
+    updated_at TEXT
+)
+""")
 conn.commit()
 
 def get_eta_record(pn):
     cur = conn.cursor()
-    # תמיכה לאחור בטבלאות ישנות ללא עמודת ספק
     try:
         cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_updates WHERE pn = ?", (pn,))
         res = cur.fetchone()
         if res:
             return res[0], res[1], res[2], res[3], res[4], res[5]
     except:
-        cur.execute("SELECT eta, status, comment, updated_by, updated_at FROM eta_updates WHERE pn = ?", (pn,))
-        res = cur.fetchone()
-        if res:
-            return res[0], res[1], "אופק (ברירת מחדל)", res[2], res[3], res[4]
+        pass
     return None
 
 def save_eta_record(pn, eta, status, supplier, comment, updated_by):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # שמירה בטבלה הראשית
     conn.execute("""
     INSERT OR REPLACE INTO eta_updates (pn, eta, status, supplier, comment, updated_by, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (pn, eta, status, supplier, comment, updated_by, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    """, (pn, eta, status, supplier, comment, updated_by, now_str))
+    
+    # הוספה להיסטוריית השינויים (Audit Trail)
+    conn.execute("""
+    INSERT INTO eta_history (pn, eta, status, supplier, comment, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (pn, eta, status, supplier, comment, updated_by, now_str))
+    
     conn.commit()
 
 def eta_color(eta_value):
@@ -98,7 +141,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================================
-# EXTRACT ASSEMBLY MONTHLY BUILD PLAN (Rows 3 to 23)
+# EXTRACT ASSEMBLY MONTHLY BUILD PLAN & BOM LEVELS
 # ==========================================================
 header_dates = df_raw.iloc[2, 108:132].values
 plan_rows = []
@@ -128,10 +171,10 @@ assembly_plan_df = pd.DataFrame(plan_rows)
 # ==========================================================
 # COLUMN MAPPING
 # ==========================================================
-PN_COL = df.columns[1]     # מק"ט (PN_ID)
-DESC_COL = df.columns[4]   # תיאור פריט
-ITEM_TYPE_COL = df.columns[44] # סוג פריט (עמודה AS)
-STOCK_COL = df.columns[79]     # מלאי (עמודה CB)
+PN_COL = df.columns[1]     
+DESC_COL = df.columns[4]   
+ITEM_TYPE_COL = df.columns[44] 
+STOCK_COL = df.columns[79]     
 
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist()
@@ -139,7 +182,7 @@ MONTH_COLS = df.columns[108:132].tolist()
 # ==========================================================
 # SIDEBAR FILTERS
 # ==========================================================
-st.sidebar.header("🔍 מסננים ראשיים")
+st.sidebar.header("🔍 מסננים מתקדמים")
 
 month_options = {}
 for m in MONTH_COLS:
@@ -158,29 +201,37 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
+# סינון לפי רמת עץ מוצר (BOM Level)
+level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in ASSEMBLY_COLS if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
+selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
+
 assembly_mapping = {"הכל": "הכל"}
+filtered_assembly_cols = []
 for col in ASSEMBLY_COLS:
     try:
         col_idx = df.columns.get_loc(col)
+        lvl = str(df_levels.iloc[0, col_idx])
         desc = df_desc.iloc[0, col_idx]
-        assembly_mapping[col] = f"{col} - {desc}"
+        if selected_level == "הכל" or lvl == selected_level:
+            filtered_assembly_cols.append(col)
+            assembly_mapping[col] = f"{col} - {desc} (רמה {lvl})"
     except:
+        filtered_assembly_cols.append(col)
         assembly_mapping[col] = col
 
 selected_assembly = st.sidebar.selectbox(
     "בחר הרכבה (Assembly)", 
-    ["הכל"] + ASSEMBLY_COLS,
+    ["הכל"] + filtered_assembly_cols,
     format_func=lambda x: assembly_mapping.get(x, x)
 )
 
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
-# חיפוש חופשי מהיר
 quick_search = st.sidebar.text_input("🔎 חיפוש מהיר (מק\"ט / תיאור)", "")
 
 # ==========================================================
-# CORE LOGIC: MRP SHORTAGES + MULTI-ROW ASSEMBLY EXPANSION
+# CORE LOGIC
 # ==========================================================
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
 mrp_shortages = df[df['Monthly_Balance'] < 0].copy()
@@ -199,7 +250,7 @@ for idx, row in mrp_shortages.iterrows():
     total_mrp_shortage = row['Total_MRP_Shortage']
     
     matched_any = False
-    for asm in ASSEMBLY_COLS:
+    for asm in filtered_assembly_cols:
         qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
         if qty_per_asm > 0:
             matched_any = True
@@ -220,7 +271,7 @@ for idx, row in mrp_shortages.iterrows():
                 "Total_MRP_Shortage": total_mrp_shortage
             })
             
-    if not matched_any:
+    if not matched_any and selected_assembly == "הכל" and selected_level == "הכל":
         breakdown_rows.append({
             "PN": pn,
             "Description": desc,
@@ -236,7 +287,6 @@ for idx, row in mrp_shortages.iterrows():
 
 breakdown_df = pd.DataFrame(breakdown_rows)
 
-# החלת סינונים
 if not breakdown_df.empty:
     if selected_item_type != "הכל":
         breakdown_df = breakdown_df[breakdown_df["Item_Type"] == selected_item_type]
@@ -250,7 +300,7 @@ if not breakdown_df.empty:
         ]
 
 # ==========================================================
-# DASHBOARD UI & KPIS
+# DASHBOARD UI & METRICS
 # ==========================================================
 st.subheader(f"📈 ניתוח חוסרים לחודש: {selected_month_label}")
 
@@ -263,7 +313,6 @@ col3.metric("📦 סך ביקוש מחושב בהרכבות", f"{total_req_deman
 st.divider()
 
 if not breakdown_df.empty and len(breakdown_df) > 0:
-    # --- טבלה ראשית להצגה ---
     st.subheader("📋 פירוט חוסרים מלא ופילוח מול הרכבות")
     
     display_df = breakdown_df[[
@@ -282,7 +331,6 @@ if not breakdown_df.empty and len(breakdown_df) > 0:
         "Total_MRP_Shortage": "סך חוסר ב-MRP"
     })
     
-    # עיצוב מותנה (Highlighting) וצביעת שורות לפי גובה החוסר
     def highlight_shortage(s):
         return ['background-color: #ffcccc' if v > 1000 else '' for v in s]
 
@@ -291,7 +339,7 @@ if not breakdown_df.empty and len(breakdown_df) > 0:
         use_container_width=True
     )
 
-    # --- כפתור ייצוא ל-Excel ---
+    # ייצוא ל-Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         display_df.to_excel(writer, index=False, sheet_name='Shortages_Breakdown')
@@ -306,16 +354,12 @@ if not breakdown_df.empty and len(breakdown_df) > 0:
 
     st.divider()
 
-    # ==========================================================
-    # TREND ANALYSIS CHART (גרף מגמות חוסרים רוחבי)
-    # ==========================================================
+    # גרף מגמות חוסרים רוחבי
     st.subheader("📊 גרף מגמות: סך חוסרים מצטבר לאורך החודשים הבאים")
-    
     trend_data = []
     for m_label, m_col in month_options.items():
         temp_bal = pd.to_numeric(df[m_col], errors='coerce').fillna(0)
         sum_shortage = temp_bal[temp_bal < 0].abs().sum()
-        # חילוץ שם חודש קצר לתצוגה בגרף
         short_name = str(m_label).split('(')[0].strip()
         trend_data.append({"חודש": short_name, "סך חוסר כספי/כמותי": sum_shortage})
     
@@ -328,10 +372,24 @@ else:
     st.success("🎉 לא נמצאו חוסרים ב-MRP עבור הסינונים שנבחרו לחודש זה!")
 
 # ==========================================================
-# ETA & SUPPLIER MANAGEMENT (עם מעקב קבלני משנה כמו אופק)
+# SUPPLIER PERFORMANCE DASHBOARD (דשבורד ספקים וקבלני משנה)
 # ==========================================================
 st.divider()
-st.subheader("📅 ניהול ומעקב ETA וקבלני משנה (נשמר מקומית במסד הנתונים)")
+st.subheader("📈 דשבורד ביצועים וסיכום לפי ספקים / קבלני משנה")
+
+cur_db = conn.cursor()
+cur_db.execute("SELECT supplier, COUNT(*) FROM eta_updates GROUP BY supplier")
+sup_summary = cur_db.fetchall()
+if sup_summary:
+    sup_df = pd.DataFrame(sup_summary, columns=["ספק / קבלן משנה", "כמות פריטים במעקב"])
+    fig_sup = px.pie(sup_df, names="ספק / קבלן משנה", values="כמות פריטים במעקב", title="התפלגות פריטים במעקב לפי ספק")
+    st.plotly_chart(fig_sup, use_container_width=True)
+
+# ==========================================================
+# ETA & AUDIT TRAIL MANAGEMENT
+# ==========================================================
+st.divider()
+st.subheader("📅 ניהול ומעקב ETA וקבלני משנה (כולל היסטוריית שינויים)")
 
 pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
 selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס וספק", pn_values)
@@ -365,7 +423,7 @@ with st.form("eta_form"):
 
 if save_btn:
     save_eta_record(selected_pn, str(eta_date), status, supplier, comment, updated_by)
-    st.success("העדכון נשמר בהצלחה!")
+    st.success("העדכון וההיסטוריה נשמרו בהצלחה!")
 
 # טבלת מעקב מרכזית
 st.subheader("🚦 טבלת סטטוסים וספקים שמורים במערכת")
@@ -389,3 +447,14 @@ if len(eta_df) > 0:
     st.dataframe(eta_df, use_container_width=True)
 else:
     st.info("עדיין לא נשמרו עדכונים במערכת.")
+
+# הצגת היסטוריית שינויים (Audit Trail) למק"ט הנבחר
+st.subheader(f"📜 היסטוריית שינויים (Audit Trail) עבור מק\"ט: {selected_pn}")
+history_cur = conn.cursor()
+history_cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_history WHERE pn = ? ORDER BY id DESC", (selected_pn,))
+hist_rows = history_cur.fetchall()
+if hist_rows:
+    hist_df = pd.DataFrame(hist_rows, columns=["ETA", "סטטוס", "ספק", "הערות", "עודכן על ידי", "זמן עדכון"])
+    st.dataframe(hist_df, use_container_width=True)
+else:
+    st.info("אין היסטוריית שינויים קודמת למק\"ט זה.")
