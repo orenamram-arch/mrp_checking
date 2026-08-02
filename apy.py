@@ -628,8 +628,23 @@ with tab1:
             "Required_Demand": "ביקוש מדויק", "Stock": "מלאי", "Total_MRP_Shortage": "סך חוסר"
         })
 
-        styled = (display_df.sort_values(by="סך חוסר", ascending=False)
-                  .style.background_gradient(subset=["סך חוסר"], cmap="Reds"))
+        def _shortage_color(val, vmax):
+            """צביעה ידנית (בלי תלות ב-matplotlib) - ככל שהחוסר גדול יותר, האדום כהה יותר."""
+            if vmax <= 0:
+                return ""
+            ratio = min(1.0, float(val) / vmax)
+            # מ-כתום בהיר עד אדום כהה
+            r = 239
+            g = int(180 - ratio * 140)
+            b = int(120 - ratio * 100)
+            return f"background-color: rgba({r},{max(g,0)},{max(b,0)},0.55); color: white;"
+
+        sorted_display_df = display_df.sort_values(by="סך חוסר", ascending=False)
+        max_shortage = sorted_display_df["סך חוסר"].max() if not sorted_display_df.empty else 0
+
+        styled = sorted_display_df.style.map(
+            lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]
+        )
         st.dataframe(styled, use_container_width=True)
 
         output = io.BytesIO()
