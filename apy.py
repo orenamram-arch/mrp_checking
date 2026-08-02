@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("📊 דשבורד חוסרי MRP ופילוח מדויק להרכבות")
-st.markdown("הצגת פריטי חוסר מתוך ה-MRP בלבד, עם פירוט דרישה פר הרכבה בחודש הנבחר")
+st.markdown("הצגת פריטי חוסר מתוך ה-MRP עם פירוט דרישה מדויק פר הרכבה לפי תוכנית חודשית")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (For ETA Updates)
@@ -102,9 +102,10 @@ for r in range(3, 24):
                     try:
                         q_val = float(qty)
                         if q_val > 0:
+                            dt = pd.to_datetime(date_val)
                             plan_rows.append({
                                 "Assembly_PN": str(asm_pn).strip(),
-                                "Month": pd.to_datetime(date_val).strftime("%Y-%m-%d"),
+                                "YearMonth": dt.strftime("%Y-%m"), # השוואה מדויקת לפי שנה-חודש
                                 "Build_Qty": q_val
                             })
                     except:
@@ -128,15 +129,23 @@ MONTH_COLS = df.columns[108:132].tolist()
 # ==========================================================
 st.sidebar.header("🔍 מסננים")
 
-month_options = {str(m): m for m in MONTH_COLS if pd.notnull(m)}
-selected_month_str = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
-selected_month_col = month_options[selected_month_str]
+month_options = {}
+for m in MONTH_COLS:
+    if pd.notnull(m):
+        try:
+            dt = pd.to_datetime(m)
+            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+        except:
+            month_options[str(m)] = m
 
-# המרת תאריך עמודת ה-MRP לתצורת מחרוזת תואמת לתוכנית הייצור (YYYY-MM-DD)
+selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
+selected_month_col = month_options[selected_month_label]
+
+# חילוץ שנה-חודש לצורך התאמה מול תוכנית הייצור
 try:
-    month_parsed_str = pd.to_datetime(selected_month_col).strftime("%Y-%m-%d")
+    selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
 except:
-    month_parsed_str = str(selected_month_col)[:10]
+    selected_ym = str(selected_month_col)[:7]
 
 assembly_mapping = {"הכל": "הכל"}
 for col in ASSEMBLY_COLS:
@@ -157,20 +166,20 @@ item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
 # ==========================================================
-# CORE LOGIC: MRP SHORTAGES + ASSEMBLY BREAKDOWN
+# CORE LOGIC: MRP SHORTAGES + PRECISE ASSEMBLY DEMAND
 # ==========================================================
-# שלב 1: זיהוי אך ורק פריטים שיש להם חוסר אמיתי ב-MRP (ערך שלילי בעמודת החודש)
+# שלב 1: זיהוי פריטים בחוסר ב-MRP לחודש הנבחר
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
 mrp_shortages = df[df['Monthly_Balance'] < 0].copy()
 mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
-# שליפת תוכנית הייצור להרכבות בחודש התואם
-month_plan = assembly_plan_df[assembly_plan_df["Month"] == month_parsed_str]
+# שליפת תוכנית הייצור להרכבות לפי שנה-חודש תואם
+month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
 plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
 
 breakdown_rows = []
 
-# שלב 2: עבור כל פריט שנמצא בחוסר ב-MRP, נפרט את חלקו בכל הרכבה
+# שלב 2: עבור כל פריט חוסר ב-MRP, חישוב מדויק של הדרישה מול ההרכבות
 for idx, row in mrp_shortages.iterrows():
     pn = str(row[PN_COL]).strip()
     desc = row[DESC_COL]
@@ -182,22 +191,23 @@ for idx, row in mrp_shortages.iterrows():
         qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
         if qty_per_asm > 0:
             asm_build_qty = plan_dict.get(asm, 0.0)
-            # דרישה פר הרכבה: כמות פריט להרכבה × תוכנית ייצור הרכבה בחודש
-            required_demand = qty_per_asm * asm_build_qty
-            asm_desc = assembly_mapping.get(asm, asm)
-            
-            breakdown_rows.append({
-                "PN": pn,
-                "Description": desc,
-                "Item_Type": item_type,
-                "Assembly": asm,
-                "Assembly_Desc": asm_desc,
-                "Qty_Per_Assembly": qty_per_asm,
-                "Assembly_Monthly_Build": asm_build_qty,
-                "Required_Demand": required_demand,
-                "Stock": stock,
-                "Total_MRP_Shortage": total_mrp_shortage
-            })
+            if asm_build_qty > 0:
+                # דרישה מדויקת: כמות פריט להרכבה × תוכנית הייצור החודשית להרכבה
+                required_demand = qty_per_asm * asm_build_qty
+                asm_desc = assembly_mapping.get(asm, asm)
+                
+                breakdown_rows.append({
+                    "PN": pn,
+                    "Description": desc,
+                    "Item_Type": item_type,
+                    "Assembly": asm,
+                    "Assembly_Desc": asm_desc,
+                    "Qty_Per_Assembly": qty_per_asm,
+                    "Assembly_Monthly_Build": asm_build_qty,
+                    "Required_Demand": required_demand,
+                    "Stock": stock,
+                    "Total_MRP_Shortage": total_mrp_shortage
+                })
 
 breakdown_df = pd.DataFrame(breakdown_rows)
 
@@ -210,16 +220,17 @@ if not breakdown_df.empty:
 # ==========================================================
 # DASHBOARD UI
 # ==========================================================
-st.subheader(f"ניתוח חוסרי MRP והתפלגות להרכבות לחודש: {selected_month_str}")
+st.subheader(f"ניתוח חוסרי MRP ודרישות הרכבה מדויקות לחודש: {selected_month_label}")
 
 col1, col2 = st.columns(2)
 col1.metric("🔴 סך פריטים בחוסר ב-MRP", len(mrp_shortages))
-col2.metric("📦 שורות חוסר מפורטות בהרכבות", len(breakdown_df) if not breakdown_df.empty else 0)
+total_demand_filtered = breakdown_df['Required_Demand'].sum() if not breakdown_df.empty else 0
+col2.metric("📦 סך ביקוש מדויק בהרכבות בסינון", f"{total_demand_filtered:,.0f}")
 
 st.divider()
 
 if not breakdown_df.empty and len(breakdown_df) > 0:
-    st.subheader("📋 פירוט חוסרי MRP מול דרישות הרכבה")
+    st.subheader("📋 פירוט חוסרי MRP ודרישות הרכבה מחושבות")
     
     display_df = breakdown_df[[
         "PN", "Description", "Item_Type", "Assembly", "Assembly_Desc", 
@@ -234,12 +245,12 @@ if not breakdown_df.empty and len(breakdown_df) > 0:
         "Assembly_Monthly_Build": "ת. ייצור הרכבה לחודש",
         "Required_Demand": "ביקוש מדויק להרכבה",
         "Stock": "מלאי נוכחי",
-        "Total_MRP_Shortage": "סך חוסר כולל ב-MRP"
+        "Total_MRP_Shortage": "סך חוסר ב-MRP"
     })
     
-    st.dataframe(display_df.sort_values(by="סך חוסר כולל ב-MRP", ascending=False), use_container_width=True)
+    st.dataframe(display_df.sort_values(by="ביקוש מדויק להרכבה", ascending=False), use_container_width=True)
 else:
-    st.success("🎉 לא נמצאו חוסרים ב-MRP עבור הסינונים שנבחרו לחודש זה!")
+    st.success("🎉 לא נמצאו נתוני ביקוש מותאמים לחוסרי ה-MRP עבור הסינונים שנבחרו לחודש זה!")
 
 # ==========================================================
 # ETA MANAGEMENT
