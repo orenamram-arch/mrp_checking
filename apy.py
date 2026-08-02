@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת: דיוק מוחלט בחישוב היחידות החסרות (Shortage) לכל פריט והרכבה.
+גרסה מעודכנת: מיפוי מדויק של חודשים ואינדקסים באופק התוכנית (כולל תיקון ספירת החוסרים).
 
 הרצה:
 streamlit run mrp_app.py
@@ -196,7 +196,7 @@ def get_first_supply_eta(pn):
     return "ללא ETA"
 
 # ==========================================================================
-# 5. סיידבר ומסננים
+# 5. סיידבר ומסננים (זיהוי חודשים מדויק)
 # ==========================================================================
 st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
@@ -223,6 +223,17 @@ try:
     selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
 except:
     selected_ym = str(selected_month_col)[:7]
+
+# ווידוא התאמה מדויקת לעמודת החודש הספציפית בגיליון אם זו עמודה ממופה
+actual_month_col = selected_month_col
+for c in MONTH_COLS:
+    if pd.notnull(c):
+        try:
+            if pd.to_datetime(c).strftime("%Y-%m") == selected_ym:
+                actual_month_col = c
+                break
+        except:
+            pass
 
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
@@ -255,7 +266,7 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר מק\"ט/�
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================================
-# 6. לוגיקת החוסרים המדויקת
+# 6. לוגיקת החוסרים המדויקת לפי החודש הנבחר
 # ==========================================================================
 def calculate_shortages_for_stock(extra_stock_dict=None):
     extra_stock_dict = extra_stock_dict or {}
@@ -265,7 +276,7 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
     plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
 
     b_rows = []
-    temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
+    temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[actual_month_col], errors='coerce').fillna(0)
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
@@ -298,10 +309,9 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
                 if required_demand <= 0:
                     continue
                 
-                # חישוב מדויק של חוסר ספציפי להרכבה זו
                 specific_shortage = max(0.0, required_demand - total_available_stock)
                 if specific_shortage <= 0:
-                    continue # יש מספיק מלאי להרכבה זו, לא נציג כחוסר!
+                    continue
                 
                 asm_desc = assembly_mapping.get(asm, asm)
                 b_rows.append({
