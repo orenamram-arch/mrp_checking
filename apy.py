@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build ממוקדת")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -380,7 +380,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מקצה את המלאי הזמין לפי עדיפות לרמות עץ מוצר נמוכות יותר, ומבליטה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת מקצה את המלאי הזמין לפי עדיפות לרמות עץ מוצר נמוכות יותר, ומציגה **אך ורק את הרכיבים שחסרים בפועל**, כאשר הפריט הקריטי מודגש ב-**BOLD**.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -432,11 +432,13 @@ with tab2:
                         possible_units = int(current_pool / qty_per) if qty_per > 0 else 0
                         missing_qty = required_for_plan - current_pool
                         available_inventory_pool[c_pn] = 0
+                        # כאן אנו מוסיפים אך ורק את הרכיבים שבאמת חסרים
                         missing_items_details.append((c_pn, c_desc, missing_qty, eta_dt, eta_val))
 
                     if possible_units < max_buildable:
                         max_buildable = possible_units
 
+        # מיון החסרים כדי לזהות את הקריטי ביותר
         if missing_items_details:
             missing_items_details.sort(key=lambda x: x[3], reverse=True)
             most_critical_pn = missing_items_details[0][0]
@@ -461,7 +463,7 @@ with tab2:
             "רמה בעץ": assembly_levels.get(asm_col, 0),
             "תוכנית ייצור": planned_build,
             "ניתן לייצר בפועל (CTB)": max_buildable,
-            "רכיבים שחסרים לעלייה לקווים (הקריטי ב-BOLD)": missing_str
+            "רכיבים חסרים בלבד (הקריטי ב-BOLD)": missing_str
         })
 
     if production_capacity_rows:
@@ -541,4 +543,3 @@ with tab5:
                 st.divider()
     else:
         st.info("אין עדכונים במערכת.")
-        
