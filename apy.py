@@ -41,7 +41,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Master Production Schedule")
-st.markdown("ניהול חוסרים דינמי, חישוב תוכנית ייצור חודשית, חיפוש חכם עם השלמה אוטומטית וניהול UNDO")
+st.markdown("מנוע חישוב חכם לזיהוי צווארי בקבוק וחישוב יכולת ייצור רקורסיבית (Multi-Level BOM)")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -178,16 +178,17 @@ for r in range(3, 24):
 
 assembly_plan_df = pd.DataFrame(plan_rows)
 
-# ==========================================================
-# COLUMN MAPPING
-# ==========================================================
 PN_COL = df.columns[1]     
 DESC_COL = df.columns[4]   
 ITEM_TYPE_COL = df.columns[44] 
 STOCK_COL = df.columns[79]     
-
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist()
+
+# הכנת מילון רכיבים מראש לביצועים מהירים בסריקה הרקורסיבית
+asm_components = {}
+for col in ASSEMBLY_COLS:
+    asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
 
 # ==========================================================
 # APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
@@ -251,11 +252,8 @@ selected_assembly = st.sidebar.selectbox(
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
-# החלפת תיבת טקסט רגילה בחיפוש חכם עם השלמה אוטומטית (Autocomplete)
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק\"ט/תיאור)", item_choices)
-
-# חילוץ המק"ט שנבחר מתוך תיבת הבחירה החכמה
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
@@ -336,11 +334,63 @@ if not breakdown_df.empty:
         breakdown_df = breakdown_df[breakdown_df["PN"] == search_pn]
 
 # ==========================================================
+# RECURSIVE INVENTORY CHECK ENGINE
+# ==========================================================
+memo_avail = {}
+def get_actual_availability(pn, visited=None):
+    """
+    אלגוריתם רקורסיבי: מחשב את הזמינות האמיתית של פריט.
+    אם הפריט הוא הרכבה - הזמינות היא המלאי הפיזי שלו + כמות היחידות שאפשר לבנות מהרכיבים שלו (ואלו נבדקים גם הם רקורסיבית).
+    """
+    if visited is None: visited = set()
+    if pn in memo_avail: return memo_avail[pn]
+    if pn in visited: return 0 # מניעת לולאה אינסופית בעץ מוצר מעגלי
+    
+    visited.add(pn)
+    row_idx = df[df[PN_COL] == pn].index
+    if len(row_idx) == 0:
+        visited.remove(pn)
+        return 0
+        
+    row = df.loc[row_idx[0]]
+    added_st, _, _, _, _, _, _ = get_inventory_record(pn)
+    phys_stock = max(0, pd.to_numeric(row[STOCK_COL], errors='coerce') or 0) + added_st
+    
+    # אם זה פריט קנוי (לא מופיע בראש עמודת הרכבה) -> הזמינות היא פשוט המלאי שלו
+    if pn not in ASSEMBLY_COLS:
+        memo_avail[pn] = phys_stock
+        visited.remove(pn)
+        return phys_stock
+        
+    # אם זה תת-הרכבה, נבדוק את הרכיבים שלה (הבנים והנכדים)
+    comps = asm_components.get(pn, pd.DataFrame())
+    if len(comps) == 0:
+        memo_avail[pn] = phys_stock
+        visited.remove(pn)
+        return phys_stock
+        
+    min_build = float('inf')
+    for _, c_row in comps.iterrows():
+        c_pn = str(c_row[PN_COL]).strip()
+        q_per = float(c_row[pn])
+        if q_per > 0:
+            # קריאה רקורסיבית למטה בעץ המוצר
+            c_avail = get_actual_availability(c_pn, visited)
+            possible = c_avail / q_per
+            if possible < min_build:
+                min_build = possible
+                
+    total_avail = phys_stock + (min_build if min_build != float('inf') else 0)
+    memo_avail[pn] = total_avail
+    visited.remove(pn)
+    return total_avail
+
+# ==========================================================
 # TABS
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📦 דשבורד חוסרים", 
-    "📊 תוכנית ייצור חודשית (יכולת ייצור בפועל)", 
+    "📊 תוכנית ייצור חודשית (מבוסס עץ מוצר מלא)", 
     "⚠️ צווארי בקבוק", 
     "📅 עדכון מלאי, ETA וספקים",
     "↩️ ניהול שינויים ו-UNDO"
@@ -373,7 +423,8 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP לחודש זה עבור הסינון שנבחר!")
 
 with tab2:
-    st.subheader("📊 תוכנית ייצור מבוססת MRP: כמה הרכבות ניתן לייצר בכל חודש?")
+    st.subheader("📊 תוכנית ייצור מבוססת עץ מוצר רקורסיבי (Multi-Level BOM)")
+    st.markdown("חישוב זה מזהה תתי-הרכבות ובודק את זמינות הרכיבים בתוך הרכיבים כדי למצוא את המגבלה האמיתית:")
     production_capacity_rows = []
 
     for m_label, m_col in month_options.items():
@@ -393,32 +444,29 @@ with tab2:
             if planned_build == 0:
                 continue
 
-            components_for_asm = df[pd.to_numeric(df[asm_col], errors='coerce') > 0]
+            # חיפוש הגורם המגביל ביותר בהתבסס על הזמינות הרקורסיבית
             max_buildable = planned_build
-
             limiting_item = "ללא מגבלה"
-            for _, comp_row in components_for_asm.iterrows():
+            
+            comps = asm_components.get(asm_col, pd.DataFrame())
+            for _, comp_row in comps.iterrows():
                 qty_per = float(comp_row[asm_col])
-                comp_balance = pd.to_numeric(comp_row[m_col], errors='coerce') or 0
+                c_pn = str(comp_row[PN_COL]).strip()
                 
-                pn_c = str(comp_row[PN_COL]).strip()
-                added_st, _, _, _, _, _, _ = get_inventory_record(pn_c)
-                effective_balance = comp_balance + added_st
-
-                if effective_balance < 0:
-                    available_stock_comp = max(0, comp_row[STOCK_COL] + added_st)
-                    possible_units = available_stock_comp / qty_per if qty_per > 0 else 0
-                    if possible_units < max_buildable:
-                        max_buildable = int(possible_units)
-                        limiting_item = f"{pn_c} ({comp_row[DESC_COL][:20]})"
+                if qty_per > 0:
+                    c_avail = get_actual_availability(c_pn)
+                    possible = c_avail / qty_per
+                    if possible < max_buildable:
+                        max_buildable = int(possible)
+                        limiting_item = f"{c_pn} ({str(comp_row[DESC_COL]).strip()[:20]})"
 
             production_capacity_rows.append({
                 "חודש": short_month_name,
                 "קוד הרכבה": asm_col,
                 "תיאור הרכבה": asm_desc,
                 "תוכנית ייצור מתוכננת": planned_build,
-                "יכולת ייצור בפועל לפי MRP": max_buildable,
-                "גורם מגביל עיקרי (צוואר בקבוק)": limiting_item
+                "יכולת ייצור בפועל": max_buildable,
+                "גורם מגביל עיקרי (צוואר בקבוק שורשי)": limiting_item
             })
 
     if production_capacity_rows:
@@ -434,9 +482,9 @@ with tab2:
         fig_cap = px.bar(
             display_cap_df, 
             x="חודש", 
-            y=["תוכנית ייצור מתוכננת", "יכולת ייצור בפועל לפי MRP"], 
+            y=["תוכנית ייצור מתוכננת", "יכולת ייצור בפועל"], 
             barmode="group",
-            title="השוואה בין תוכנית עבודה מקורית לבין יכולת ייצור אמיתית לפי חוסרי MRP"
+            title="השוואה בין תוכנית עבודה מקורית לבין יכולת ייצור אמיתית"
         )
         st.plotly_chart(fig_cap, use_container_width=True)
     else:
@@ -469,54 +517,55 @@ with tab3:
 with tab4:
     st.subheader("📅 עדכון מלאי נכנס, ETA וספקים")
 
-    pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
-    selected_pn = st.selectbox("בחר מק\"ט לעדכון", pn_values)
+    selected_pn = st.selectbox("בחר מק\"ט לעדכון", item_choices).split(" - ")[0]
+    if selected_pn == "הכל":
+        st.warning("אנא בחר מק\"ט ספציפי מהרשימה.")
+    else:
+        saved_stock, saved_eta, saved_status, saved_supplier, saved_comment, saved_by, _ = get_inventory_record(selected_pn)
 
-    saved_stock, saved_eta, saved_status, saved_supplier, saved_comment, saved_by, _ = get_inventory_record(selected_pn)
+        with st.form("inventory_form"):
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                added_stock_input = st.number_input("כמות מלאי חדשה שהגיעה (להוספה למלאי)", min_value=0.0, value=float(saved_stock), step=1.0)
+            with col_f2:
+                try:
+                    parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else date.today()
+                except:
+                    parsed_eta = date.today()
+                eta_date = st.date_input("תאריך הגעה משוער (ETA)", value=parsed_eta)
+            with col_f3:
+                status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
+                status_idx = status_options.index(saved_status) if saved_status in status_options else 0
+                status = st.selectbox("סטטוס", status_options, index=status_idx)
 
-    with st.form("inventory_form"):
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            added_stock_input = st.number_input("כמות מלאי חדשה שהגיעה (להוספה למלאי)", min_value=0.0, value=float(saved_stock), step=1.0)
-        with col_f2:
-            try:
-                parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else date.today()
-            except:
-                parsed_eta = date.today()
-            eta_date = st.date_input("תאריך הגעה משוער (ETA)", value=parsed_eta)
-        with col_f3:
-            status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
-            status_idx = status_options.index(saved_status) if saved_status in status_options else 0
-            status = st.selectbox("סטטוס", status_options, index=status_idx)
+            col_f4, col_f5 = st.columns(2)
+            with col_f4:
+                sup_idx = supplier_options.index(saved_supplier) if saved_supplier in supplier_options else 0
+                supplier = st.selectbox("ספק / קבלן משנה", supplier_options, index=sup_idx)
+            with col_f5:
+                updated_by = st.text_input("עודכן על ידי", value=saved_by)
 
-        col_f4, col_f5 = st.columns(2)
-        with col_f4:
-            sup_idx = supplier_options.index(saved_supplier) if saved_supplier in supplier_options else 0
-            supplier = st.selectbox("ספק / קבלן משנה", supplier_options, index=sup_idx)
-        with col_f5:
-            updated_by = st.text_input("עודכן על ידי", value=saved_by)
+            comment = st.text_area("הערות מעקב", value=saved_comment)
+            save_btn = st.form_submit_button("שמור עדכון והחל על ה-MRP")
 
-        comment = st.text_area("הערות מעקב", value=saved_comment)
-        save_btn = st.form_submit_button("שמור עדכון והחל על ה-MRP")
+        if save_btn:
+            save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
+            st.success("הנתונים נשמרו בהצלחה במסד הנתונים והשפיעו מידית על תחשיבי ה-MRP!")
+            st.rerun()
 
-    if save_btn:
-        save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
-        st.success("הנתונים נשמרו בהצלחה במסד הנתונים והשפיעו מידית על תחשיבי ה-MRP!")
-        st.rerun()
-
-    st.divider()
-    with open(LOCAL_DB_FILE, "rb") as db_file:
-        db_bytes = db_file.read()
-    st.download_button(
-        label="📥 הורד גיבוי מלא של מסד הנתונים המקומי (.db)",
-        data=db_bytes,
-        file_name="inventory_backup.db",
-        mime="application/octet-stream"
-    )
+        st.divider()
+        with open(LOCAL_DB_FILE, "rb") as db_file:
+            db_bytes = db_file.read()
+        st.download_button(
+            label="📥 הורד גיבוי מלא של מסד הנתונים המקומי (.db)",
+            data=db_bytes,
+            file_name="inventory_backup.db",
+            mime="application/octet-stream"
+        )
 
 with tab5:
     st.subheader("↩️ ניהול פריטים שעודכנו ואפשרות ביצוע UNDO")
-    st.markdown("כאן מוצגים כל הפריטים ששנית להם את המלאי או ה-ETA. לחיצה על כפתור ה-UNDO תמחק את העדכון ותחזיר את הפריט למצבו המקורי במערכת.")
+    st.markdown("כאן מוצגים כל הפריטים ששינית להם את המלאי או ה-ETA. לחיצה על כפתור ה-UNDO תמחק את העדכון ותחזיר את הפריט למצבו המקורי במערכת וב-MRP.")
 
     history_cur = conn.cursor()
     history_cur.execute("SELECT pn, added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates ORDER BY updated_at DESC")
@@ -537,7 +586,7 @@ with tab5:
                 with col_u3:
                     if st.button("🔄 UNDO", key=f"undo_{i_pn}", help="החזר למצב מקורי"):
                         delete_inventory_record(i_pn)
-                        st.success(f"העדכון למק\"ט {i_pn} בוטל בהצלחה!")
+                        st.success(f"העדכון למק\"ט {i_pn} בוטל בהצלחה! ה-MRP הוחזר לקדמותו.")
                         st.rerun()
                 st.divider()
     else:
