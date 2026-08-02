@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build ממוקדת")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build מדויקת")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -260,7 +260,7 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר א
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES
+# CORE LOGIC FOR SHORTAGES (Single Source of Truth)
 # ==========================================================
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month_col], errors='coerce').fillna(0)
 for idx, row in df.iterrows():
@@ -380,17 +380,10 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מקצה את המלאי הזמין לפי עדיפות לרמות עץ מוצר נמוכות יותר, ומציגה **אך ורק את הרכיבים שחסרים בפועל**, כאשר הפריט הקריטי מודגש ב-**BOLD**.")
+    st.markdown("המערכת מציגה ישירות מתוך טבלת החוסרים המאומתת את הרכיבים שגורמים לגירעון בכל הרכבה. הפריט הקריטי ביותר מודגש בגרסה זו ב-**BOLD**.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
-
-    available_inventory_pool = {}
-    for idx_r, row_r in df.iterrows():
-        p_num = str(row_r[PN_COL]).strip()
-        base_st = pd.to_numeric(row_r[STOCK_COL], errors='coerce') or 0
-        added_st, _, _, _, _, _, _ = get_inventory_record(p_num)
-        available_inventory_pool[p_num] = max(0, base_st) + added_st
 
     production_capacity_rows = []
 
@@ -405,40 +398,24 @@ with tab2:
             
         planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
         
-        comps = asm_components.get(asm_col, pd.DataFrame())
-        max_buildable = planned_build
+        # סינון חוסרים ששייכים אך ורק להרכבה זו מתוך טבלת החוסרים הראשית (breakdown_df)
+        asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
+
         missing_items_details = []
+        for _, s_row in asm_shortages.iterrows():
+            c_pn = str(s_row["PN"]).strip()
+            c_desc = str(s_row["Description"]).strip()
+            s_qty = s_row["Total_MRP_Shortage"]
+            
+            _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
+            try:
+                eta_dt = pd.to_datetime(eta_val).date() if eta_val else date(2099, 12, 31)
+            except:
+                eta_dt = date(2099, 12, 31)
 
-        if len(comps) > 0:
-            for _, comp_row in comps.iterrows():
-                qty_per = float(comp_row[asm_col])
-                c_pn = str(comp_row[PN_COL]).strip()
-                c_desc = str(comp_row[DESC_COL]).strip()
-                
-                if qty_per > 0:
-                    required_for_plan = planned_build * qty_per
-                    current_pool = available_inventory_pool.get(c_pn, 0)
-                    
-                    _, eta_val, _, _, _, _, _ = get_inventory_record(c_pn)
-                    try:
-                        eta_dt = pd.to_datetime(eta_val).date() if eta_val else date(2099, 12, 31)
-                    except:
-                        eta_dt = date(2099, 12, 31)
+            missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_val))
 
-                    if current_pool >= required_for_plan:
-                        available_inventory_pool[c_pn] = current_pool - required_for_plan
-                        possible_units = planned_build
-                    else:
-                        possible_units = int(current_pool / qty_per) if qty_per > 0 else 0
-                        missing_qty = required_for_plan - current_pool
-                        available_inventory_pool[c_pn] = 0
-                        # כאן אנו מוסיפים אך ורק את הרכיבים שבאמת חסרים
-                        missing_items_details.append((c_pn, c_desc, missing_qty, eta_dt, eta_val))
-
-                    if possible_units < max_buildable:
-                        max_buildable = possible_units
-
-        # מיון החסרים כדי לזהות את הקריטי ביותר
+        # מציאת הפריט הקריטי ביותר (ללא ETA או ETA מאוחר ביותר)
         if missing_items_details:
             missing_items_details.sort(key=lambda x: x[3], reverse=True)
             most_critical_pn = missing_items_details[0][0]
@@ -456,6 +433,7 @@ with tab2:
                 formatted_missing.append(item_text)
 
         missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר את כל התוכנית."
+        max_buildable = 0 if formatted_missing else planned_build
 
         production_capacity_rows.append({
             "קוד הרכבה": asm_col,
