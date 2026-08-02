@@ -1,13 +1,17 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import sqlite3
+from datetime import datetime, date
 
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
-# כאן אתה מגדיר את הנתיב הקבוע לקובץ במחשב שלך
-# שים לב להשתמש בלוכסנים קדמיים (/) או בלוכסן כפול (\\)
-FILE_PATH = "mrp_2.xlsx" # לדוגמה: "C:/Users/YourName/Documents/mrp_2.xlsx"
+# החלף את הקישור הזה בקישור הישיר (Raw URL) לקובץ שלך ב-GitHub
+GITHUB_URL = "https://raw.githubusercontent.com/YourUsername/YourRepo/main/mrp_2.xlsx"
+
+# שם הקובץ המקומי שייווצר אוטומטית כדי לשמור את העדכונים שלך
+LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
     page_title="MRP Control Tower",
@@ -16,43 +20,81 @@ st.set_page_config(
 )
 
 st.title("📊 דשבורד ניתוח חוסרים - MRP")
-st.markdown("מערכת לניתוח חוסרים לפי תוכנית עבודה, הרכבות וסוגי פריטים")
+st.markdown("קריאת נתונים מ-GitHub ושמירת עדכוני סטטוס בקובץ מקומי")
 
 # ==========================================================
-# DATA LOADING
+# LOCAL DATABASE SETUP (For ETA Updates)
+# ==========================================================
+conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
+
+conn.execute("""
+CREATE TABLE IF NOT EXISTS eta_updates
+(
+    pn TEXT PRIMARY KEY,
+    eta TEXT,
+    status TEXT,
+    comment TEXT,
+    updated_by TEXT,
+    updated_at TEXT
+)
+""")
+conn.commit()
+
+def get_eta_record(pn):
+    cur = conn.cursor()
+    cur.execute("SELECT eta, status, comment, updated_by, updated_at FROM eta_updates WHERE pn = ?", (pn,))
+    return cur.fetchone()
+
+def save_eta_record(pn, eta, status, comment, updated_by):
+    conn.execute("""
+    INSERT OR REPLACE INTO eta_updates (pn, eta, status, comment, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (pn, eta, status, comment, updated_by, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+
+def eta_color(eta_value):
+    if eta_value in [None, "", "NaT"]:
+        return "⚪"
+    try:
+        eta_date = pd.to_datetime(eta_value).date()
+        days = (eta_date - date.today()).days
+        if days < 0:
+            return "🔴"
+        if days <= 14:
+            return "🟠"
+        if days <= 30:
+            return "🟡"
+        return "🟢"
+    except:
+        return "⚪"
+
+# ==========================================================
+# DATA LOADING FROM GITHUB
 # ==========================================================
 @st.cache_data
-def load_data(file_path):
-    # קריאת הנתונים המרכזיים - הכותרות בשורה 30 (אינדקס 29)
-    df = pd.read_excel(file_path, header=29)
-    
-    # קריאת שורה 29 בלבד כדי לחלץ את רמות העץ (BOM levels) של ההרכבות
-    df_levels = pd.read_excel(file_path, header=None, skiprows=28, nrows=1)
-    
-    # קריאת שורה 28 בלבד כדי לחלץ את תיאורי ההרכבות
-    df_desc = pd.read_excel(file_path, header=None, skiprows=27, nrows=1)
+def load_data(url):
+    # קריאת הנתונים מהקישור ב-GitHub
+    df = pd.read_excel(url, header=29)
+    df_levels = pd.read_excel(url, header=None, skiprows=28, nrows=1)
+    df_desc = pd.read_excel(url, header=None, skiprows=27, nrows=1)
     
     # ניקוי שמות עמודות
     df.columns = [str(c).strip() if pd.notnull(c) else c for c in df.columns]
-    
     return df, df_levels, df_desc
 
 try:
-    with st.spinner('טוען נתונים מהקובץ המקומי...'):
-        df, df_levels, df_desc = load_data(FILE_PATH)
+    with st.spinner('טוען נתוני MRP מ-GitHub...'):
+        df, df_levels, df_desc = load_data(GITHUB_URL)
 except Exception as e:
-    st.error(f"שגיאה בטעינת הקובץ מהנתיב: {FILE_PATH}. ודא שהקובץ סגור ושהנתיב נכון.\nפירוט השגיאה: {e}")
+    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. ודא שהקישור הוא מסוג Raw ושהקובץ נגיש.\nפירוט השגיאה: {e}")
     st.stop()
 
 # ==========================================================
-# COLUMN MAPPING (Based on user specs)
+# COLUMN MAPPING
 # ==========================================================
 PN_COL = df.columns[1]     
 DESC_COL = df.columns[4]   
-
-# הרכבות: עמודות K עד AJ -> אינדקסים 10 עד 35
 ASSEMBLY_COLS = df.columns[10:36].tolist()
-
 ITEM_TYPE_COL = df.columns[44]
 STOCK_COL = df.columns[79]
 MONTH_COLS = df.columns[108:132].tolist()
@@ -62,12 +104,10 @@ MONTH_COLS = df.columns[108:132].tolist()
 # ==========================================================
 st.sidebar.header("🔍 מסננים")
 
-# 1. סינון חודש
 month_options = {str(m): m for m in MONTH_COLS if pd.notnull(m)}
 selected_month_str = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month = month_options[selected_month_str]
 
-# 2. סינון הרכבה + הוספת תיאור לתיבת הבחירה
 assembly_mapping = {"הכל": "הכל"}
 for col in ASSEMBLY_COLS:
     try:
@@ -83,7 +123,6 @@ selected_assembly = st.sidebar.selectbox(
     format_func=lambda x: assembly_mapping.get(x, x)
 )
 
-# 3. סינון סוג פריט
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types)
 
@@ -99,13 +138,12 @@ if selected_assembly != "הכל":
     filtered_df[selected_assembly] = pd.to_numeric(filtered_df[selected_assembly], errors='coerce').fillna(0)
     filtered_df = filtered_df[filtered_df[selected_assembly] > 0]
 
-# חישוב חוסרים
 filtered_df['Balance'] = pd.to_numeric(filtered_df[selected_month], errors='coerce').fillna(0)
 shortage_df = filtered_df[filtered_df['Balance'] < 0].copy()
 shortage_df['Shortage_Qty'] = shortage_df['Balance'].abs()
 
 # ==========================================================
-# DASHBOARD UI
+# DASHBOARD UI: SHORTAGES
 # ==========================================================
 st.subheader(f"ניתוח חוסרים לחודש: {selected_month_str}")
 
@@ -127,27 +165,10 @@ if selected_assembly != "הכל":
 st.divider()
 
 if total_shortage_items > 0:
-    st.subheader("🔥 20 החוסרים הגדולים ביותר")
-    top_shortages = shortage_df.sort_values(by='Shortage_Qty', ascending=False).head(20)
-    
-    fig = px.bar(
-        top_shortages, 
-        x='Shortage_Qty', 
-        y=str(PN_COL), 
-        orientation='h',
-        text='Shortage_Qty',
-        color='Shortage_Qty',
-        color_continuous_scale='Reds',
-        labels={'Shortage_Qty': 'כמות חסרה', str(PN_COL): 'מק"ט'}
-    )
-    fig.update_layout(yaxis={'categoryorder':'total ascending'})
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("📋 רשימת חוסרים מפורטת")
+    st.subheader("📋 רשימת חוסרים מפורטת (מתוך ה-MRP)")
     
     display_cols = [PN_COL, DESC_COL, ITEM_TYPE_COL, STOCK_COL, 'Shortage_Qty']
     display_df = shortage_df[display_cols].sort_values(by='Shortage_Qty', ascending=False)
-    
     display_df = display_df.rename(columns={
         PN_COL: 'מק"ט',
         DESC_COL: 'תיאור',
@@ -155,7 +176,54 @@ if total_shortage_items > 0:
         STOCK_COL: 'מלאי נוכחי',
         'Shortage_Qty': 'כמות חסרה'
     })
-    
     st.dataframe(display_df, use_container_width=True)
 else:
     st.success("🎉 לא נמצאו חוסרים עבור הסינונים שנבחרו!")
+
+# ==========================================================
+# ETA MANAGEMENT (WRITES TO LOCAL FILE)
+# ==========================================================
+st.divider()
+st.subheader("📅 ניהול ומעקב ETA (נשמר מקומית)")
+
+# טופס העדכון
+pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
+selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס", pn_values)
+record = get_eta_record(selected_pn)
+default_comment = record[2] if record else ""
+
+with st.form("eta_form"):
+    eta_date = st.date_input("תאריך הגעה משוער (ETA)")
+    status = st.selectbox(
+        "סטטוס",
+        ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
+    )
+    comment = st.text_area("הערות", value=default_comment)
+    updated_by = st.text_input("עודכן על ידי")
+    save_btn = st.form_submit_button("שמור עדכון")
+
+if save_btn:
+    save_eta_record(selected_pn, str(eta_date), status, comment, updated_by)
+    st.success("העדכון נשמר בהצלחה בקובץ המקומי!")
+
+# טבלת המעקב מתוך מסד הנתונים המקומי
+st.subheader("🚦 טבלת סטטוסים שמורים")
+eta_rows = []
+for pn in pn_values:
+    rec = get_eta_record(pn)
+    if rec:
+        eta_rows.append({
+            "מק\"ט": pn,
+            "ETA": rec[0],
+            "סיכון": eta_color(rec[0]),
+            "סטטוס": rec[1],
+            "הערות": rec[2],
+            "אחראי": rec[3],
+            "תאריך עדכון": rec[4]
+        })
+
+eta_df = pd.DataFrame(eta_rows)
+if len(eta_df) > 0:
+    st.dataframe(eta_df, use_container_width=True)
+else:
+    st.info("עדיין לא נשמרו עדכונים במערכת.")
