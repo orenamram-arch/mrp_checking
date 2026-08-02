@@ -154,7 +154,7 @@ def resolve_password():
 def check_password() -> bool:
     expected, source = resolve_password()
     if not expected:
-        return True # ללא סיסמה כפי שביקשת קודם
+        return True
     if st.session_state.get("auth_ok"):
         return True
     st.markdown("### 🔐 כניסה למערכת")
@@ -184,7 +184,6 @@ def get_conn():
         id INTEGER PRIMARY KEY AUTOINCREMENT, pn TEXT, added_stock REAL, eta TEXT,
         status TEXT, supplier TEXT, comment TEXT, updated_by TEXT, updated_at TEXT)""")
     
-    # מיגרציה מקובץ ישן אם קיים
     if os.path.exists("eta_updates.db"):
         try:
             c.execute("ATTACH DATABASE 'eta_updates.db' AS old")
@@ -317,7 +316,7 @@ def run_mrp(extra_stock: dict | None = None):
         links = [a for a in order if a["pn"] in it["links"]]
         for m in range(N_MONTHS):
             if m > 0:
-                bal += it["eta"][m - 1]   # אספקה זמינה מהחודש שאחרי הגעתה
+                bal += it["eta"][m - 1]   
                 
             for a in links:
                 q = it["links"][a["pn"]]
@@ -353,7 +352,6 @@ def run_mrp(extra_stock: dict | None = None):
 
 UPDATES = load_updates()
 EXTRA = {pn: u["added"] for pn, u in UPDATES.items() if u["added"] > 0}
-# עדכון הסטטוסים והספקים מהמסד המקומי לתוך ITEMS בהרצה
 for it in ITEMS:
     if it["pn"] in UPDATES:
         if UPDATES[it["pn"]]["status"]:
@@ -489,7 +487,6 @@ with TABS[0]:
                 fig_line = px.line(trend_df, x="Month", y="Total_Value", markers=True, title="שווי החוסר הצפוי לאורך חודשי האופק (₪)")
                 st.plotly_chart(style_fig(fig_line, 330), use_container_width=True)
 
-        # ייצוא דו"ח מנהלים
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             dash_df.to_excel(writer, index=False, sheet_name='Executive_Shortages')
@@ -588,7 +585,7 @@ with TABS[4]:
 # ---------- 10.5 סימולציית What-If ----------
 with TABS[5]:
     st.subheader("💡 סימולציית What-If (מה יקרה אם...)")
-    st.markdown("כלי אינטראקטיבי לקבלת החלטות: בדוק כיצד הוספת מלאי או פתרון מק"ט משחרר את קווי הייצור.")
+    st.markdown("כלי אינטראקטיבי לקבלת החלטות: בדוק כיצד הוספת מלאי או פתרון מק\"ט משחרר את קווי הייצור.")
     
     col_w1, col_w2 = st.columns(2)
     with col_w1:
