@@ -3,8 +3,11 @@ import pandas as pd
 import plotly.express as px
 
 # ==========================================================
-# PAGE CONFIG
+# CONFIGURATION
 # ==========================================================
+# הנתיב הקבוע לקובץ במחשב שלך
+FILE_PATH = "C:/Users/oram1003/Desktop/mrp_2.xlsx"
+
 st.set_page_config(
     page_title="MRP Control Tower",
     page_icon="📦",
@@ -15,58 +18,42 @@ st.title("📊 דשבורד ניתוח חוסרים - MRP")
 st.markdown("מערכת לניתוח חוסרים לפי תוכנית עבודה, הרכבות וסוגי פריטים")
 
 # ==========================================================
-# FILE UPLOAD
-# ==========================================================
-uploaded_file = st.sidebar.file_uploader("העלה קובץ MRP (mrp_2.xlsx)", type=["xlsx", "xls"])
-
-if uploaded_file is None:
-    st.info("אנא העלה את קובץ ה-MRP כדי להתחיל.")
-    st.stop()
-
-# ==========================================================
 # DATA LOADING
 # ==========================================================
 @st.cache_data
-def load_data(file):
+def load_data(file_path):
     # קריאת הנתונים המרכזיים - הכותרות בשורה 30 (אינדקס 29)
-    df = pd.read_excel(file, header=29)
+    df = pd.read_excel(file_path, header=29)
     
     # קריאת שורה 29 בלבד כדי לחלץ את רמות העץ (BOM levels) של ההרכבות
-    # שורה 29 באקסל היא אינדקס 28
-    df_levels = pd.read_excel(file, header=None, skiprows=28, nrows=1)
+    df_levels = pd.read_excel(file_path, header=None, skiprows=28, nrows=1)
+    
+    # קריאת שורה 28 בלבד כדי לחלץ את תיאורי ההרכבות
+    df_desc = pd.read_excel(file_path, header=None, skiprows=27, nrows=1)
     
     # ניקוי שמות עמודות
     df.columns = [str(c).strip() if pd.notnull(c) else c for c in df.columns]
     
-    return df, df_levels
+    return df, df_levels, df_desc
 
 try:
-    with st.spinner('טוען נתונים...'):
-        df, df_levels = load_data(uploaded_file)
+    with st.spinner('טוען נתונים מהקובץ המקומי...'):
+        df, df_levels, df_desc = load_data(FILE_PATH)
 except Exception as e:
-    st.error(f"שגיאה בטעינת הקובץ: {e}")
+    st.error(f"שגיאה בטעינת הקובץ מהנתיב: {FILE_PATH}. ודא שהקובץ סגור ושהנתיב נכון.\nפירוט השגיאה: {e}")
     st.stop()
 
 # ==========================================================
 # COLUMN MAPPING (Based on user specs)
 # ==========================================================
-# עמודות A-J הן אינדקסים 0-9. 
-PN_COL = df.columns[1]     # עמודה B (מק"ט) - ניתן לשנות אם המק"ט בעמודה אחרת
-DESC_COL = df.columns[4]   # עמודה E (תיאור) - ניתן לשנות אם התיאור בעמודה אחרת
+PN_COL = df.columns[1]     
+DESC_COL = df.columns[4]   
 
 # הרכבות: עמודות K עד AJ -> אינדקסים 10 עד 35
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 
-# סוג פריט: עמודה AS -> אינדקס 44
 ITEM_TYPE_COL = df.columns[44]
-
-# מלאי: עמודה CB -> אינדקס 79
 STOCK_COL = df.columns[79]
-
-# ETA: עמודות CC עד CZ -> אינדקסים 80 עד 103
-ETA_COLS = df.columns[80:104].tolist()
-
-# מאזן חומרים (חודשים): עמודות DE עד EB -> אינדקסים 108 עד 131
 MONTH_COLS = df.columns[108:132].tolist()
 
 # ==========================================================
@@ -74,39 +61,46 @@ MONTH_COLS = df.columns[108:132].tolist()
 # ==========================================================
 st.sidebar.header("🔍 מסננים")
 
-# 1. סינון חודש (מתוך עמודות מאזן החומרים)
+# 1. סינון חודש
 month_options = {str(m): m for m in MONTH_COLS if pd.notnull(m)}
 selected_month_str = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month = month_options[selected_month_str]
 
-# 2. סינון הרכבה
-selected_assembly = st.sidebar.selectbox("בחר הרכבה (Assembly)", ["הכל"] + ASSEMBLY_COLS)
+# 2. סינון הרכבה + הוספת תיאור לתיבת הבחירה
+assembly_mapping = {"הכל": "הכל"}
+for col in ASSEMBLY_COLS:
+    try:
+        col_idx = df.columns.get_loc(col)
+        desc = df_desc.iloc[0, col_idx]
+        assembly_mapping[col] = f"{col} - {desc}"
+    except:
+        assembly_mapping[col] = col
+
+selected_assembly = st.sidebar.selectbox(
+    "בחר הרכבה (Assembly)", 
+    ["הכל"] + ASSEMBLY_COLS,
+    format_func=lambda x: assembly_mapping.get(x, x)
+)
 
 # 3. סינון סוג פריט
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types)
-
 
 # ==========================================================
 # APPLY FILTERS & CALCULATE SHORTAGES
 # ==========================================================
 filtered_df = df.copy()
 
-# סינון לפי סוג פריט
 if selected_item_type != "הכל":
     filtered_df = filtered_df[filtered_df[ITEM_TYPE_COL] == selected_item_type]
 
-# סינון לפי הרכבה
 if selected_assembly != "הכל":
-    # נניח שפריט שייך להרכבה אם הכמות בעמודת ההרכבה גדולה מ-0
     filtered_df[selected_assembly] = pd.to_numeric(filtered_df[selected_assembly], errors='coerce').fillna(0)
     filtered_df = filtered_df[filtered_df[selected_assembly] > 0]
 
-# חישוב חוסרים לחודש הנבחר (חוסר = מאזן שלילי)
+# חישוב חוסרים
 filtered_df['Balance'] = pd.to_numeric(filtered_df[selected_month], errors='coerce').fillna(0)
 shortage_df = filtered_df[filtered_df['Balance'] < 0].copy()
-
-# המרת החוסר לערך מוחלט להצגה נוחה
 shortage_df['Shortage_Qty'] = shortage_df['Balance'].abs()
 
 # ==========================================================
@@ -114,7 +108,6 @@ shortage_df['Shortage_Qty'] = shortage_df['Balance'].abs()
 # ==========================================================
 st.subheader(f"ניתוח חוסרים לחודש: {selected_month_str}")
 
-# --- KPIs ---
 col1, col2, col3 = st.columns(3)
 total_shortage_items = len(shortage_df)
 total_shortage_qty = shortage_df['Shortage_Qty'].sum()
@@ -122,7 +115,6 @@ total_shortage_qty = shortage_df['Shortage_Qty'].sum()
 col1.metric("🔴 פריטים בחוסר", total_shortage_items)
 col2.metric("📦 כמות חסרה כוללת", f"{total_shortage_qty:,.0f}")
 
-# הצגת רמת עץ ההרכבה אם נבחרה הרכבה ספציפית
 if selected_assembly != "הכל":
     try:
         assembly_index = df.columns.get_loc(selected_assembly)
@@ -134,11 +126,9 @@ if selected_assembly != "הכל":
 st.divider()
 
 if total_shortage_items > 0:
-    # --- Bar Chart ---
     st.subheader("🔥 20 החוסרים הגדולים ביותר")
     top_shortages = shortage_df.sort_values(by='Shortage_Qty', ascending=False).head(20)
     
-    # במידה ועמודות המק"ט והתיאור הוגדרו נכון, ניצור גרף לפי מק"ט
     fig = px.bar(
         top_shortages, 
         x='Shortage_Qty', 
@@ -152,15 +142,11 @@ if total_shortage_items > 0:
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- Data Table ---
     st.subheader("📋 רשימת חוסרים מפורטת")
     
-    # עמודות להצגה בטבלה
     display_cols = [PN_COL, DESC_COL, ITEM_TYPE_COL, STOCK_COL, 'Shortage_Qty']
-    # הוספת ה-ETA הראשון שנמצא (לדוגמה) או סתם הצגת העמודות העיקריות
     display_df = shortage_df[display_cols].sort_values(by='Shortage_Qty', ascending=False)
     
-    # שינוי שמות עמודות לתצוגה ברורה
     display_df = display_df.rename(columns={
         PN_COL: 'מק"ט',
         DESC_COL: 'תיאור',
