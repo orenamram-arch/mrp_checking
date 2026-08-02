@@ -41,7 +41,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Master Production Schedule")
-st.markdown("ניהול חוסרים דינמי, תוכנית ייצור מבוססת תאריך התחלה וחיפוש חכם")
+st.markdown("ניהול חוסרים דינמי, תוכנית ייצור (Clear To Build) וחיפוש חכם")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -384,7 +384,7 @@ def get_actual_availability_by_date(pn, target_date, visited=None):
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📦 דשבורד חוסרים", 
-    "📊 תוכנית ייצור לפי תאריך מתוכנן", 
+    "📊 תוכנית ייצור (Clear To Build)", 
     "⚠️ צווארי בקבוק", 
     "📅 מעקב מלאי וספקים",
     "↩️ ניהול UNDO"
@@ -407,15 +407,15 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP לפי הפילטר הנוכחי!")
 
 with tab2:
-    st.subheader("📊 סימולציית תוכנית ייצור לפי תאריך יעד")
+    st.subheader("📊 סימולציית תוכנית ייצור (Clear To Build) לפי תאריך יעד")
     
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         planned_start_date = st.date_input("בחר תאריך תחילת ייצור מתוכנן:", value=date.today())
     with col_t2:
-        st.info("💡 המערכת מחשבת את המלאי הזמין *בדיוק* ליום זה, וכוללת פריטים שה-ETA שלהם קודם לתאריך. אם יש מספר גורמים מגבילים באותה רמה - כולם יוצגו.")
+        st.info("💡 המערכת בודקת את הכמות המתוכננת בתוכנית ומציגה את כל הרכיבים שחסרים במלאי כדי להוציא אותה לפועל (כולל כמויות מדויקות שחסרות).")
 
-    if st.button("🚀 חשב יכולת ייצור לתאריך זה"):
+    if st.button("🚀 חשב יכולת ייצור וחוסרים לתאריך זה"):
         memo_avail.clear()
         production_capacity_rows = []
 
@@ -424,9 +424,14 @@ with tab2:
                 asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
             except:
                 asm_desc = ""
+                
+            planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
+            
+            if planned_build == 0:
+                continue
 
             max_buildable = float('inf')
-            limiting_items_list = []
+            missing_items_list = []
             
             comps = asm_components.get(asm_col, pd.DataFrame())
             if len(comps) > 0:
@@ -440,31 +445,36 @@ with tab2:
                         
                         if possible_units < max_buildable:
                             max_buildable = possible_units
-                            limiting_items_list = [f"{c_pn} ({str(comp_row[DESC_COL]).strip()[:15]})"]
-                        elif possible_units == max_buildable:
-                            limiting_items_list.append(f"{c_pn} ({str(comp_row[DESC_COL]).strip()[:15]})")
+                            
+                        # חישוב החוסר המדויק לביצוע התוכנית!
+                        target_qty = planned_build * qty_per
+                        if c_avail < target_qty:
+                            shortage = target_qty - c_avail
+                            missing_items_list.append(f"{c_pn} (חסר: {shortage:g})")
             else:
                 max_buildable = 0
 
-            # טיפול במקרים שאין מגבלה כלל, או שיש רשימת פריטים מגבילים
             if max_buildable == float('inf'):
                 max_buildable = 0
-                limiting_str = "אין רכיבים מוגדרים"
-            elif not limiting_items_list:
-                limiting_str = "ללא מגבלה"
+                missing_str = "אין רכיבים מוגדרים תחת הרכבה זו"
+            elif not missing_items_list:
+                missing_str = "אין חוסרים! ניתן לייצר את כל התוכנית במלואה."
             else:
-                limiting_str = " | ".join(limiting_items_list)
+                missing_str = " | ".join(missing_items_list)
 
             production_capacity_rows.append({
                 "קוד הרכבה (מעמודה AS)": asm_col,
                 "תיאור הרכבה": asm_desc,
-                "כמות מקסימלית לייצור בתאריך הנבחר": max_buildable,
-                "הגורמים המגבילים העיקריים (צוואר בקבוק)": limiting_str
+                "דרישה מתוכננת": planned_build,
+                "ניתן לייצר בפועל (CTB)": max_buildable,
+                "רכיבים חסרים לביצוע התוכנית במלואה": missing_str
             })
 
         if production_capacity_rows:
-            cap_df = pd.DataFrame(production_capacity_rows).sort_values(by="כמות מקסימלית לייצור בתאריך הנבחר", ascending=False)
+            cap_df = pd.DataFrame(production_capacity_rows).sort_values(by="ניתן לייצר בפועל (CTB)", ascending=False)
             st.dataframe(cap_df, use_container_width=True)
+        else:
+            st.warning(f"לא הוגדרה תוכנית ייצור להרכבות בחודש {selected_ym}.")
 
 with tab3:
     st.subheader("⚠️ ניתוח צווארי בקבוק רוחביים")
