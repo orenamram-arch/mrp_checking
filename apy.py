@@ -115,7 +115,7 @@ def save_eta_record(pn, eta, status, supplier, comment, updated_by, webhook_url=
     
     # שליחת התראה אם הוגדר Webhook
     if webhook_url:
-        msg = f"🔔 עדכון MRP חדש במערכת!\nמק\"ט: {pn}\nסטטוס: {status}\nספק: {supplier}\nETA: {eta}\nעודכן ע"י: {updated_by}"
+        msg = f"🔔 עדכון MRP חדש במערכת!\nמק\ט: {pn}\nסטטוס: {status}\nספק: {supplier}\nETA: {eta}\nעודכן ע"י: {updated_by}"
         send_teams_notification(webhook_url, msg)
 
 def eta_color(eta_value):
