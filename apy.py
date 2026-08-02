@@ -7,10 +7,7 @@ from datetime import datetime, date
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
-# הקישור הישיר (Raw) לקובץ מתוך GitHub שסיפקת
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
-
-# שם הקובץ המקומי שייווצר אוטומטית לשמירת העדכונים שלך
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
@@ -19,8 +16,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 דשבורד ניתוח חוסרים - MRP")
-st.markdown("קריאת נתונים מ-GitHub ושמירת עדכוני סטטוס בקובץ מקומי")
+st.title("📊 דשבורד ניתוח חוסרים מתקדם - MRP")
+st.markdown("ניתוח חוסרים פר פריט מול הרכבות (כמות נדרשת להרכבה × תוכנית ייצור חודשית)")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (For ETA Updates)
@@ -90,11 +87,15 @@ except Exception as e:
 # ==========================================================
 # COLUMN MAPPING
 # ==========================================================
-PN_COL = df.columns[1]     
-DESC_COL = df.columns[4]   
+PN_COL = df.columns[1]     # מק"ט (PN_ID)
+DESC_COL = df.columns[4]   # תיאור פריט
+ITEM_TYPE_COL = df.columns[44] # סוג פריט (עמודה AS)
+STOCK_COL = df.columns[79]     # מלאי (עמודה CB)
+
+# עמודות ההרכבות (K עד AJ) - אינדקסים 10 עד 35
 ASSEMBLY_COLS = df.columns[10:36].tolist()
-ITEM_TYPE_COL = df.columns[44]
-STOCK_COL = df.columns[79]
+
+# עמודות מאזן החומרים / חודשים (DE עד EB)
 MONTH_COLS = df.columns[108:132].tolist()
 
 # ==========================================================
@@ -106,6 +107,7 @@ month_options = {str(m): m for m in MONTH_COLS if pd.notnull(m)}
 selected_month_str = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month = month_options[selected_month_str]
 
+# מיפוי הרכבות כולל תיאור
 assembly_mapping = {"הכל": "הכל"}
 for col in ASSEMBLY_COLS:
     try:
@@ -122,64 +124,90 @@ selected_assembly = st.sidebar.selectbox(
 )
 
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist()
-selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types)
+selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
 
 # ==========================================================
-# APPLY FILTERS & CALCULATE SHORTAGES
+# ADVANCED BREAKDOWN ENGINE (Part per Assembly mapping)
 # ==========================================================
-filtered_df = df.copy()
+# נבנה טבלה מפורטת המפרטת לכל פריט את הדרישה שלו בכל הרכבה
+breakdown_rows = []
 
+for idx, row in df.iterrows():
+    pn = row[PN_COL]
+    desc = row[DESC_COL]
+    item_type = row[ITEM_TYPE_COL]
+    stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+    
+    for asm in ASSEMBLY_COLS:
+        # כמות הפריט הנדרשת להרכבה הספציפית
+        qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
+        if qty_per_asm > 0:
+            # נרצה לחלץ את תוכנית הייצור של ההרכבה בחודש הנבחר אם קיימת, 
+            # לחלופין נסתמך על החישוב הקיים בשורת הפריט או נחשב לפי העניין
+            asm_desc = assembly_mapping.get(asm, asm)
+            breakdown_rows.append({
+                "PN": pn,
+                "Description": desc,
+                "Item_Type": item_type,
+                "Assembly": asm,
+                "Assembly_Desc": asm_desc,
+                "Qty_Per_Assembly": qty_per_asm,
+                "Stock": stock
+            })
+
+breakdown_df = pd.DataFrame(breakdown_rows)
+
+# סינון לפי סוג פריט
 if selected_item_type != "הכל":
-    filtered_df = filtered_df[filtered_df[ITEM_TYPE_COL] == selected_item_type]
+    breakdown_df = breakdown_df[breakdown_df["Item_Type"] == selected_item_type]
 
+# סינון לפי הרכבה
 if selected_assembly != "הכל":
-    filtered_df[selected_assembly] = pd.to_numeric(filtered_df[selected_assembly], errors='coerce').fillna(0)
-    filtered_df = filtered_df[filtered_df[selected_assembly] > 0]
+    breakdown_df = breakdown_df[breakdown_df["Assembly"] == selected_assembly]
 
-filtered_df['Balance'] = pd.to_numeric(filtered_df[selected_month], errors='coerce').fillna(0)
-shortage_df = filtered_df[filtered_df['Balance'] < 0].copy()
-shortage_df['Shortage_Qty'] = shortage_df['Balance'].abs()
+# חישוב מאזן חומרים כולל לפריט מהעמודה החודשית הנבחרת
+df['Total_Balance'] = pd.to_numeric(df[selected_month], errors='coerce').fillna(0)
+balance_map = df.set_index(PN_COL)['Total_Balance'].to_dict()
+
+breakdown_df["Monthly_Balance"] = breakdown_df["PN"].map(balance_map)
+# פריטים בחוסר הם בעלי מאזן שלילי
+shortage_breakdown = breakdown_df[breakdown_df["Monthly_Balance"] < 0].copy()
+shortage_breakdown["Shortage_Qty"] = shortage_breakdown["Monthly_Balance"].abs()
 
 # ==========================================================
-# DASHBOARD UI: SHORTAGES
+# DASHBOARD UI
 # ==========================================================
-st.subheader(f"ניתוח חוסרים לחודש: {selected_month_str}")
+st.subheader(f"ניתוח חוסרים מפורט לפי הרכבה לחודש: {selected_month_str}")
 
-col1, col2, col3 = st.columns(3)
-total_shortage_items = len(shortage_df)
-total_shortage_qty = shortage_df['Shortage_Qty'].sum()
-
-col1.metric("🔴 פריטים בחוסר", total_shortage_items)
-col2.metric("📦 כמות חסרה כוללת", f"{total_shortage_qty:,.0f}")
-
-if selected_assembly != "הכל":
-    try:
-        assembly_index = df.columns.get_loc(selected_assembly)
-        bom_level = df_levels.iloc[0, assembly_index]
-        col3.metric("🔗 רמת הרכבה (BOM Level)", str(bom_level))
-    except:
-        col3.metric("🔗 רמת הרכבה (BOM Level)", "לא נמצא")
+col1, col2 = st.columns(2)
+col1.metric("🔴 שורות חוסר משוייכות", len(shortage_breakdown))
+col2.metric("📦 סך כמות חסרה", f"{shortage_breakdown['Shortage_Qty'].sum():,.0f}")
 
 st.divider()
 
-if total_shortage_items > 0:
-    st.subheader("📋 רשימת חוסרים מפורטת (מתוך ה-MRP)")
+if len(shortage_breakdown) > 0:
+    st.subheader("📋 פירוט חוסרים לפי פריט והרכבה")
     
-    display_cols = [PN_COL, DESC_COL, ITEM_TYPE_COL, STOCK_COL, 'Shortage_Qty']
-    display_df = shortage_df[display_cols].sort_values(by='Shortage_Qty', ascending=False)
-    display_df = display_df.rename(columns={
-        PN_COL: 'מק"ט',
-        DESC_COL: 'תיאור',
-        ITEM_TYPE_COL: 'סוג פריט',
-        STOCK_COL: 'מלאי נוכחי',
-        'Shortage_Qty': 'כמות חסרה'
+    display_df = shortage_breakdown[[
+        "PN", "Description", "Item_Type", "Assembly", "Assembly_Desc", 
+        "Qty_Per_Assembly", "Stock", "Shortage_Qty"
+    ]].rename(columns={
+        "PN": "מק\"ט",
+        "Description": "תיאור פריט",
+        "Item_Type": "סוג פריט (AS)",
+        "Assembly": "קוד הרכבה",
+        "Assembly_Desc": "תיאור הרכבה",
+        "Qty_Per_Assembly": "כמות נדרשת להרכבה",
+        "Stock": "מלאי נוכחי",
+        "Shortage_Qty": "חוסר מחושב"
     })
-    st.dataframe(display_df, use_container_width=True)
+    
+    st.dataframe(display_df.sort_values(by="חוסר מחושב", ascending=False), use_container_width=True)
 else:
-    st.success("🎉 לא נמצאו חוסרים עבור הסינונים שנבחרו!")
+    st.success("🎉 לא נמצאו חוסרים עבור הסינונים שנבחרו לחודש זה!")
 
 # ==========================================================
-# ETA MANAGEMENT (WRITES TO LOCAL FILE)
+# ETA MANAGEMENT
 # ==========================================================
 st.divider()
 st.subheader("📅 ניהול ומעקב ETA (נשמר מקומית)")
