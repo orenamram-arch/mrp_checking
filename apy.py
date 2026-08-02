@@ -4,6 +4,8 @@ import plotly.express as px
 import sqlite3
 from datetime import datetime, date
 import io
+import requests
+import json
 
 # ==========================================================
 # CONFIGURATION & LOGIN SYSTEM
@@ -12,7 +14,7 @@ GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main
 LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
-    page_title="MRP Control Tower & Supplier Management",
+    page_title="MRP Control Tower & Enterprise Portal",
     page_icon="📦",
     layout="wide"
 )
@@ -20,7 +22,7 @@ st.set_page_config(
 # מנגנון אבטחה והתחברות בסיסי
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "ELTA2026": # סיסמה לדוגמה, ניתן לשנות
+        if st.session_state["password"] == "ELTA2026":
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
@@ -39,15 +41,14 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("📊 MRP Control Tower & Advanced Supply Chain")
-st.markdown("מערכת ניהול חוסרים מתקדמת הכוללת מעקב קבלני משנה (אופק), היסטוריית שינויים, רמות עץ וייצוא נתונים")
+st.title("📊 MRP Control Tower & Enterprise Portal")
+st.markdown("מערכת ניהול חוסרים מתקדמת הכוללת פורטל ספקים, התראות אוטומטיות וניתוח צווארי בקבוק בעץ המוצר")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Audit Trail & Suppliers)
 # ==========================================================
 conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
 
-# טבלת סטטוסים נוכחיים
 conn.execute("""
 CREATE TABLE IF NOT EXISTS eta_updates
 (
@@ -61,7 +62,6 @@ CREATE TABLE IF NOT EXISTS eta_updates
 )
 """)
 
-# טבלת היסטוריית שינויים מלאה (Audit Trail)
 conn.execute("""
 CREATE TABLE IF NOT EXISTS eta_history
 (
@@ -88,21 +88,35 @@ def get_eta_record(pn):
         pass
     return None
 
-def save_eta_record(pn, eta, status, supplier, comment, updated_by):
+def send_teams_notification(webhook_url, message):
+    """שליחת התראה אוטומטית ל-Teams / Slack / Webhook"""
+    if not webhook_url:
+        return False
+    try:
+        payload = {"text": message}
+        response = requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
+        return response.status_code == 200
+    except:
+        return False
+
+def save_eta_record(pn, eta, status, supplier, comment, updated_by, webhook_url=""):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    # שמירה בטבלה הראשית
     conn.execute("""
     INSERT OR REPLACE INTO eta_updates (pn, eta, status, supplier, comment, updated_by, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (pn, eta, status, supplier, comment, updated_by, now_str))
     
-    # הוספה להיסטוריית השינויים (Audit Trail)
     conn.execute("""
     INSERT INTO eta_history (pn, eta, status, supplier, comment, updated_by, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (pn, eta, status, supplier, comment, updated_by, now_str))
     
     conn.commit()
+    
+    # שליחת התראה אם הוגדר Webhook
+    if webhook_url:
+        msg = f"🔔 עדכון MRP חדש במערכת!\nמק\"ט: {pn}\nסטטוס: {status}\nספק: {supplier}\nETA: {eta}\nעודכן ע"י: {updated_by}"
+        send_teams_notification(webhook_url, msg)
 
 def eta_color(eta_value):
     if eta_value in [None, "", "NaT"]:
@@ -180,8 +194,22 @@ ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist()
 
 # ==========================================================
-# SIDEBAR FILTERS
+# SIDEBAR & PORTAL MODE CONFIGURATION
 # ==========================================================
+st.sidebar.header("⚙️ מצב מערכת וניהול")
+portal_mode = st.sidebar.radio("בחר תצוגה:", ["מנהל מערכת מלא", "פורטל קבלן משנה (אופק בלבד)"])
+
+webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
+
+# הגדרת ספקים
+supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
+
+if portal_mode == "פורטל קבלן משנה (אופק בלבד)":
+    st.warning("🔒 אתה נמצא כעת בתצוגת פורטל קבלן משנה (אופק). מוצגים אך ורק פריטים שמשוייכים לאופק.")
+    selected_supplier_filter = "אופק"
+else:
+    selected_supplier_filter = "הכל"
+
 st.sidebar.header("🔍 מסננים מתקדמים")
 
 month_options = {}
@@ -201,7 +229,6 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-# סינון לפי רמת עץ מוצר (BOM Level)
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in ASSEMBLY_COLS if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
 
@@ -249,6 +276,14 @@ for idx, row in mrp_shortages.iterrows():
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     total_mrp_shortage = row['Total_MRP_Shortage']
     
+    # שליפת הספק הרשום במסד הנתונים עבור פריט זה
+    rec_check = get_eta_record(pn)
+    current_sup = rec_check[2] if rec_check else "אופק"
+    
+    # סינון לפי ספק אם במצב פורטל
+    if selected_supplier_filter != "הכל" and current_sup != selected_supplier_filter:
+        continue
+
     matched_any = False
     for asm in filtered_assembly_cols:
         qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
@@ -262,6 +297,7 @@ for idx, row in mrp_shortages.iterrows():
                 "PN": pn,
                 "Description": desc,
                 "Item_Type": item_type,
+                "Supplier": current_sup,
                 "Assembly": asm,
                 "Assembly_Desc": asm_desc,
                 "Qty_Per_Assembly": qty_per_asm,
@@ -276,6 +312,7 @@ for idx, row in mrp_shortages.iterrows():
             "PN": pn,
             "Description": desc,
             "Item_Type": item_type,
+            "Supplier": current_sup,
             "Assembly": "ללא שיוך",
             "Assembly_Desc": "ללא שיוך להרכבה ראשית",
             "Qty_Per_Assembly": 0,
@@ -300,161 +337,160 @@ if not breakdown_df.empty:
         ]
 
 # ==========================================================
-# DASHBOARD UI & METRICS
+# TABS FOR ENTERPRISE FEATURES (כולל ניתוח צווארי בקבוק)
 # ==========================================================
-st.subheader(f"📈 ניתוח חוסרים לחודש: {selected_month_label}")
+tab1, tab2, tab3 = st.tabs(["📦 דשבורד חוסרים ראשי", "⚠️ ניתוח צווארי בקבוק (Bottlenecks)", "📅 מעקב ETA וספקים"])
 
-col1, col2, col3 = st.columns(3)
-col1.metric("🔴 פריטים בחוסר ב-MRP", len(mrp_shortages))
-col2.metric("📋 סך שורות פריט-הדדי להרכבה", len(breakdown_df) if not breakdown_df.empty else 0)
-total_req_demand = breakdown_df['Required_Demand'].sum() if not breakdown_df.empty else 0
-col3.metric("📦 סך ביקוש מחושב בהרכבות", f"{total_req_demand:,.0f}")
+with tab1:
+    st.subheader(f"📈 ניתוח חוסרים לחודש: {selected_month_label}")
 
-st.divider()
-
-if not breakdown_df.empty and len(breakdown_df) > 0:
-    st.subheader("📋 פירוט חוסרים מלא ופילוח מול הרכבות")
-    
-    display_df = breakdown_df[[
-        "PN", "Description", "Item_Type", "Assembly", "Assembly_Desc", 
-        "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage"
-    ]].rename(columns={
-        "PN": "מק\"ט",
-        "Description": "תיאור פריט",
-        "Item_Type": "סוג פריט (AS)",
-        "Assembly": "קוד הרכבה",
-        "Assembly_Desc": "תיאור הרכבה",
-        "Qty_Per_Assembly": "כמות נדרשת להרכבה",
-        "Assembly_Monthly_Build": "ת. ייצור הרכבה לחודש",
-        "Required_Demand": "ביקוש מדויק להרכבה",
-        "Stock": "מלאי נוכחי",
-        "Total_MRP_Shortage": "סך חוסר ב-MRP"
-    })
-    
-    def highlight_shortage(s):
-        return ['background-color: #ffcccc' if v > 1000 else '' for v in s]
-
-    st.dataframe(
-        display_df.sort_values(by="סך חוסר ב-MRP", ascending=False).style.apply(highlight_shortage, subset=['סך חוסר ב-MRP']), 
-        use_container_width=True
-    )
-
-    # ייצוא ל-Excel
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        display_df.to_excel(writer, index=False, sheet_name='Shortages_Breakdown')
-    processed_data = output.getvalue()
-
-    st.download_button(
-        label="📥 הורד את הטבלה המוצגת לקובץ Excel",
-        data=processed_data,
-        file_name=f"MRP_Shortages_{selected_ym}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🔴 פריטים בחוסר ב-MRP", len(mrp_shortages))
+    col2.metric("📋 סך שורות פריט-הדדי להרכבה", len(breakdown_df) if not breakdown_df.empty else 0)
+    total_req_demand = breakdown_df['Required_Demand'].sum() if not breakdown_df.empty else 0
+    col3.metric("📦 סך ביקוש מחושב בהרכבות", f"{total_req_demand:,.0f}")
 
     st.divider()
 
-    # גרף מגמות חוסרים רוחבי
-    st.subheader("📊 גרף מגמות: סך חוסרים מצטבר לאורך החודשים הבאים")
-    trend_data = []
-    for m_label, m_col in month_options.items():
-        temp_bal = pd.to_numeric(df[m_col], errors='coerce').fillna(0)
-        sum_shortage = temp_bal[temp_bal < 0].abs().sum()
-        short_name = str(m_label).split('(')[0].strip()
-        trend_data.append({"חודש": short_name, "סך חוסר כספי/כמותי": sum_shortage})
-    
-    trend_df = pd.DataFrame(trend_data)
-    fig_trend = px.bar(trend_df, x="חודש", y="סך חוסר כספי/כמותי", text_auto='.2s', color="סך חוסר כספי/כמותי", color_continuous_scale="Reds")
-    fig_trend.update_layout(xaxis_tickangle=-45)
-    st.plotly_chart(fig_trend, use_container_width=True)
-
-else:
-    st.success("🎉 לא נמצאו חוסרים ב-MRP עבור הסינונים שנבחרו לחודש זה!")
-
-# ==========================================================
-# SUPPLIER PERFORMANCE DASHBOARD (דשבורד ספקים וקבלני משנה)
-# ==========================================================
-st.divider()
-st.subheader("📈 דשבורד ביצועים וסיכום לפי ספקים / קבלני משנה")
-
-cur_db = conn.cursor()
-cur_db.execute("SELECT supplier, COUNT(*) FROM eta_updates GROUP BY supplier")
-sup_summary = cur_db.fetchall()
-if sup_summary:
-    sup_df = pd.DataFrame(sup_summary, columns=["ספק / קבלן משנה", "כמות פריטים במעקב"])
-    fig_sup = px.pie(sup_df, names="ספק / קבלן משנה", values="כמות פריטים במעקב", title="התפלגות פריטים במעקב לפי ספק")
-    st.plotly_chart(fig_sup, use_container_width=True)
-
-# ==========================================================
-# ETA & AUDIT TRAIL MANAGEMENT
-# ==========================================================
-st.divider()
-st.subheader("📅 ניהול ומעקב ETA וקבלני משנה (כולל היסטוריית שינויים)")
-
-pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
-selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס וספק", pn_values)
-
-existing_rec = get_eta_record(selected_pn)
-def_eta, def_status, def_supplier, def_comment, def_by = (
-    (existing_rec[0], existing_rec[1], existing_rec[2], existing_rec[3], existing_rec[4]) 
-    if existing_rec else (date.today(), "פתוח", "אופק", "", "")
-)
-
-with st.form("eta_form"):
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        try:
-            parsed_eta = pd.to_datetime(def_eta).date() if def_eta else date.today()
-        except:
-            parsed_eta = date.today()
-        eta_date = st.date_input("תאריך הגעה משוער (ETA)", value=parsed_eta)
-    with col_f2:
-        status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
-        status_idx = status_options.index(def_status) if def_status in status_options else 0
-        status = st.selectbox("סטטוס", status_options, index=status_idx)
-    with col_f3:
-        supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
-        sup_idx = supplier_options.index(def_supplier) if def_supplier in supplier_options else 0
-        supplier = st.selectbox("קבלן משנה / ספק", supplier_options, index=sup_idx)
-
-    comment = st.text_area("הערות מעקב", value=def_comment)
-    updated_by = st.text_input("עודכן על ידי", value=def_by)
-    save_btn = st.form_submit_button("שמור עדכון במערכת")
-
-if save_btn:
-    save_eta_record(selected_pn, str(eta_date), status, supplier, comment, updated_by)
-    st.success("העדכון וההיסטוריה נשמרו בהצלחה!")
-
-# טבלת מעקב מרכזית
-st.subheader("🚦 טבלת סטטוסים וספקים שמורים במערכת")
-eta_rows = []
-for pn in pn_values:
-    rec = get_eta_record(pn)
-    if rec:
-        eta_rows.append({
-            "מק\"ט": pn,
-            "ETA": rec[0],
-            "סיכון": eta_color(rec[0]),
-            "סטטוס": rec[1],
-            "ספק / קב\"מ": rec[2],
-            "הערות": rec[3],
-            "אחראי": rec[4],
-            "תאריך עדכון": rec[5]
+    if not breakdown_df.empty and len(breakdown_df) > 0:
+        st.subheader("📋 פירוט חוסרים מלא ופילוח מול הרכבות")
+        
+        display_df = breakdown_df[[
+            "PN", "Description", "Item_Type", "Supplier", "Assembly", "Assembly_Desc", 
+            "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage"
+        ]].rename(columns={
+            "PN": "מק\"ט",
+            "Description": "תיאור פריט",
+            "Item_Type": "סוג פריט (AS)",
+            "Supplier": "ספק / קב\"מ",
+            "Assembly": "קוד הרכבה",
+            "Assembly_Desc": "תיאור הרכבה",
+            "Qty_Per_Assembly": "כמות נדרשת להרכבה",
+            "Assembly_Monthly_Build": "ת. ייצור הרכבה לחודש",
+            "Required_Demand": "ביקוש מדויק להרכבה",
+            "Stock": "מלאי נוכחי",
+            "Total_MRP_Shortage": "סך חוסר ב-MRP"
         })
+        
+        def highlight_shortage(s):
+            return ['background-color: #ffcccc' if v > 1000 else '' for v in s]
 
-eta_df = pd.DataFrame(eta_rows)
-if len(eta_df) > 0:
-    st.dataframe(eta_df, use_container_width=True)
-else:
-    st.info("עדיין לא נשמרו עדכונים במערכת.")
+        st.dataframe(
+            display_df.sort_values(by="סך חוסר ב-MRP", ascending=False).style.apply(highlight_shortage, subset=['סך חוסר ב-MRP']), 
+            use_container_width=True
+        )
 
-# הצגת היסטוריית שינויים (Audit Trail) למק"ט הנבחר
-st.subheader(f"📜 היסטוריית שינויים (Audit Trail) עבור מק\"ט: {selected_pn}")
-history_cur = conn.cursor()
-history_cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_history WHERE pn = ? ORDER BY id DESC", (selected_pn,))
-hist_rows = history_cur.fetchall()
-if hist_rows:
-    hist_df = pd.DataFrame(hist_rows, columns=["ETA", "סטטוס", "ספק", "הערות", "עודכן על ידי", "זמן עדכון"])
-    st.dataframe(hist_df, use_container_width=True)
-else:
-    st.info("אין היסטוריית שינויים קודמת למק\"ט זה.")
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            display_df.to_excel(writer, index=False, sheet_name='Shortages_Breakdown')
+        processed_data = output.getvalue()
+
+        st.download_button(
+            label="📥 הורד את הטבלה המוצגת לקובץ Excel",
+            data=processed_data,
+            file_name=f"MRP_Shortages_{selected_ym}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.success("🎉 לא נמצאו חוסרים ב-MRP עבור הסינונים שנבחרו לחודש זה!")
+
+with tab2:
+    st.subheader("⚠️ ניתוח צווארי בקבוק (Bottleneck Analysis) בעץ המוצר")
+    st.markdown("סקירה אוטומטית של רכיבים המופיעים במספר הרב ביותר של הרכבות וגורמים להשפעת רוחב על הייצור:")
+    
+    # אלגוריתם זיהוי צווארי בקבוק: ספירת הופעות של כל מק"ט בכל עמודות ההרכבות
+    bottleneck_rows = []
+    for idx, row in df.iterrows():
+        pn = str(row[PN_COL]).strip()
+        desc = str(row[DESC_COL])
+        count_assemblies = 0
+        total_qty_needed = 0
+        
+        for asm in ASSEMBLY_COLS:
+            q = pd.to_numeric(row[asm], errors='coerce') or 0
+            if q > 0:
+                count_assemblies += 1
+                total_qty_needed += q
+                
+        if count_assemblies > 1: # פריט שמופיע ביותר מהרכבה אחת
+            bottleneck_rows.append({
+                "מק\"ט": pn,
+                "תיאור": desc,
+                "מספר הרכבות שבהן משתתף": count_assemblies,
+                "סך כמות נדרשת במצטבר": total_qty_needed
+            })
+            
+    if bottleneck_rows:
+        bn_df = pd.DataFrame(bottleneck_rows).sort_values(by="מספר הרכבות שבהן משתתף", ascending=False)
+        st.dataframe(bn_df.head(20), use_container_width=True)
+        st.info("💡 טיפ: רכיבים המופיעים במספר רב של הרכבות הם צווארי בקבוק פוטנציאליים. עדיפות עליונה להבטיח את זמינותם ברכש.")
+    else:
+        st.info("לא נמצאו פריטים משותפים למספר הרכבות.")
+
+with tab3:
+    st.subheader("📅 מעקב ETA וספקים (כולל היסטוריית שינויים ועדכונים)")
+
+    pn_values = sorted(df[PN_COL].dropna().astype(str).unique())
+    selected_pn = st.selectbox("בחר מק\"ט לעדכון סטטוס וספק", pn_values)
+
+    existing_rec = get_eta_record(selected_pn)
+    def_eta, def_status, def_supplier, def_comment, def_by = (
+        (existing_rec[0], existing_rec[1], existing_rec[2], existing_rec[3], existing_rec[4]) 
+        if existing_rec else (date.today(), "פתוח", "אופק", "", "")
+    )
+
+    with st.form("eta_form"):
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            try:
+                parsed_eta = pd.to_datetime(def_eta).date() if def_eta else date.today()
+            except:
+                parsed_eta = date.today()
+            eta_date = st.date_input("תאריך הגעה משוער (ETA)", value=parsed_eta)
+        with col_f2:
+            status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
+            status_idx = status_options.index(def_status) if def_status in status_options else 0
+            status = st.selectbox("סטטוס", status_options, index=status_idx)
+        with col_f3:
+            sup_idx = supplier_options.index(def_supplier) if def_supplier in supplier_options else 0
+            supplier = st.selectbox("קבלן משנה / ספק", supplier_options, index=sup_idx)
+
+        comment = st.text_area("הערות מעקב", value=def_comment)
+        updated_by = st.text_input("עודכן על ידי", value=def_by)
+        save_btn = st.form_submit_button("שמור עדכון במערכת ושלח התראה")
+
+    if save_btn:
+        save_eta_record(selected_pn, str(eta_date), status, supplier, comment, updated_by, webhook_url)
+        st.success("העדכון, ההיסטוריה וההתראה נשמרו בהצלחה!")
+
+    st.subheader("🚦 טבלת סטטוסים וספקים שמורים במערכת")
+    eta_rows = []
+    for pn in pn_values:
+        rec = get_eta_record(pn)
+        if rec:
+            eta_rows.append({
+                "מק\"ט": pn,
+                "ETA": rec[0],
+                "סיכון": eta_color(rec[0]),
+                "סטטוס": rec[1],
+                "ספק / קב\"מ": rec[2],
+                "הערות": rec[3],
+                "אחראי": rec[4],
+                "תאריך עדכון": rec[5]
+            })
+
+    eta_df = pd.DataFrame(eta_rows)
+    if len(eta_df) > 0:
+        st.dataframe(eta_df, use_container_width=True)
+    else:
+        st.info("עדיין לא נשמרו עדכונים במערכת.")
+
+    st.subheader(f"📜 היסטוריית שינויים (Audit Trail) עבור מק\"ט: {selected_pn}")
+    history_cur = conn.cursor()
+    history_cur.execute("SELECT eta, status, supplier, comment, updated_by, updated_at FROM eta_history WHERE pn = ? ORDER BY id DESC", (selected_pn,))
+    hist_rows = history_cur.fetchall()
+    if hist_rows:
+        hist_df = pd.DataFrame(hist_rows, columns=["ETA", "סטטוס", "ספק", "הערות", "עודכן על ידי", "זמן עדכון"])
+        st.dataframe(hist_df, use_container_width=True)
+    else:
+        st.info("אין היסטוריית שינויים קודמת למק\"ט זה.")
