@@ -129,13 +129,10 @@ selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS
 # ==========================================================
 # PRECISE SHORTAGE ALLOCATION ENGINE
 # ==========================================================
-# 1. חישוב מאזן חומרים אמיתי לחודש הנבחר מתוך ה-MRP
 df['Monthly_Balance'] = pd.to_numeric(df[selected_month], errors='coerce').fillna(0)
-# פריטים בחוסר ב-MRP הם בעלי ערך שלילי
 mrp_shortages = df[df['Monthly_Balance'] < 0].copy()
 mrp_shortages['Total_Shortage_Qty'] = mrp_shortages['Monthly_Balance'].abs()
 
-# 2. פירוט החוסר לפי הרכבות בהן הפריט משתתף
 breakdown_rows = []
 
 for idx, row in mrp_shortages.iterrows():
@@ -145,7 +142,6 @@ for idx, row in mrp_shortages.iterrows():
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     total_shortage = row['Total_Shortage_Qty']
     
-    # איתור ההרכבות בהן הפריט נדרש וכמות הדרישה בכל הרכבה
     active_assemblies = {}
     total_weight = 0
     
@@ -155,10 +151,8 @@ for idx, row in mrp_shortages.iterrows():
             active_assemblies[asm] = qty_per_asm
             total_weight += qty_per_asm
             
-    # אם הפריט שייך להרכבות, נחלק את החוסר באופן יحסי לדרישה בכל הרכבה
     if active_assemblies and total_weight > 0:
         for asm, qty_per_asm in active_assemblies.items():
-            # חלקו יחסי מתוך סך החוסר ב-MRP
             allocated_shortage = total_shortage * (qty_per_asm / total_weight)
             asm_desc = assembly_mapping.get(asm, asm)
             
@@ -174,7 +168,6 @@ for idx, row in mrp_shortages.iterrows():
                 "Allocated_Shortage": allocated_shortage
             })
     else:
-        # אם אין שיוך להרכבה ספציפית
         breakdown_rows.append({
                 "PN": pn,
                 "Description": desc,
@@ -190,11 +183,11 @@ for idx, row in mrp_shortages.iterrows():
 breakdown_df = pd.DataFrame(breakdown_rows)
 
 # סינון לפי סוג פריט
-if selected_item_type != "הכל":
+if selected_item_type != "הכל" and not breakdown_df.empty:
     breakdown_df = breakdown_df[breakdown_df["Item_Type"] == selected_item_type]
 
 # סינון לפי הרכבה
-if selected_assembly != "הכל":
+if selected_assembly != "הכל" and not breakdown_df.empty:
     breakdown_df = breakdown_df[breakdown_df["Assembly"] == selected_assembly]
 
 # ==========================================================
@@ -204,11 +197,13 @@ st.subheader(f"ניתוח חוסרים מבוסס MRP ופילוח לפי הרכ
 
 col1, col2 = st.columns(2)
 col1.metric("🔴 פריטים בחוסר (לפי MRP)", len(mrp_shortages))
-col2.metric("📦 סך חוסר מחושב בסינון", f"{breakdown_df['Allocated_Shortage'].sum():,.0f}")
+
+total_allocated_qty = breakdown_df['Allocated_Shortage'].sum() if not breakdown_df.empty else 0
+col2.metric("📦 סך חוסר מחושב בסינון", f"{total_allocated_qty:,.0f}")
 
 st.divider()
 
-if len(breakdown_df) > 0:
+if not breakdown_df.empty and len(breakdown_df) > 0:
     st.subheader("📋 רשימת חוסרים מפורטת ומשויכת להרכבות")
     
     display_df = breakdown_df[[
