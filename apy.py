@@ -177,15 +177,19 @@ for col in valid_assemblies:
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
 def get_first_supply_eta(pn):
+    # 1. קודם כל נבדוק אם יש עדכון ידני בבסיס הנתונים המקומי
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
         
+    # 2. אם אין עדכון ידני, נחפש את שורת הפריט בטבלה הגולמית
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
-        for col_pos in range(80, min(108, max_cols)):
+        
+        # נסרוק את כל עמודות האספקה החל מעמודה 50 ועד הסוף כדי לא לפספס כלום
+        for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
                 if pd.notnull(val) and val != '' and val != 'NaN':
@@ -193,12 +197,16 @@ def get_first_supply_eta(pn):
                     if q > 0:
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
-                            dt = pd.to_datetime(date_val)
-                            corrected_dt = dt - pd.DateOffset(months=1)
-                            return corrected_dt.strftime("%Y-%m")
+                            dt = pd.to_datetime(date_val, errors='coerce')
+                            if pd.notnull(dt):
+                                # בדיקה האם התאריך הגיוני (משנת 2024 ומעלה)
+                                if dt.year >= 2024:
+                                    return dt.strftime("%Y-%m")
             except:
                 pass
-    return "ללא ETA"
+                
+    # אם באמת אין שום תאריך באקסל, נחזיר מחרוזת ריקה במקום "ללא ETA" כדי שלא יופיע מיותר
+    return "בדיקה נדרשת"
 
 # ==========================================================
 # APPLY USER INVENTORY UPDATES TO MAIN DATAFRAME
@@ -331,7 +339,7 @@ if not breakdown_df.empty:
         breakdown_df = breakdown_df[breakdown_df["PN"] == search_pn]
 
 # ==========================================================
-# TABS (Including Executive Summary & What-If)
+# TABS
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 Executive Dashboard", 
@@ -349,7 +357,6 @@ with tab1:
     if selected_assembly != "הכל":
         dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
 
-    # חישוב מדדי KPI ניהוליים
     total_planned_assemblies = len([a for a in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() > 0])
     blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
     ready_assemblies = max(0, total_planned_assemblies - blocked_assemblies)
@@ -364,7 +371,6 @@ with tab1:
     st.divider()
 
     if not dash_df.empty and len(dash_df) > 0:
-        # אזור גרפים ויזואליים מתקדמים
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
@@ -374,14 +380,12 @@ with tab1:
             
         with col_g2:
             st.markdown("### 📊 מגמת חוסרים רוחבית לאורך חודשי השנה")
-            # יצירת גרף מגמה חודשי לכלל החוסרים
             trend_rows = []
             for m_col in MONTH_COLS:
                 if pd.notnull(m_col):
                     try:
                         m_dt = pd.to_datetime(m_col)
                         m_ym = m_dt.strftime("%Y-%m")
-                        # חישוב חוסרים באותו חודש
                         temp_b = pd.to_numeric(df[m_col], errors='coerce').fillna(0)
                         tot_sh = temp_b[temp_b < 0].abs().sum()
                         trend_rows.append({"Month": m_ym, "Total_Shortage": tot_sh})
@@ -404,7 +408,6 @@ with tab1:
         })
         st.dataframe(display_df.sort_values(by="סך חוסר", ascending=False), use_container_width=True)
 
-        # כפתור ייצוא ל-Excel לישיבות הנהלה
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             display_df.to_excel(writer, index=False, sheet_name='Executive_Shortages')
@@ -421,7 +424,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מציגה את הרכיבים החסרים בלבד, מאתרת את ה-ETA המקורי מהאקסל, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
+    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק של הרכיבים החסרים ומדגישה ב-**BOLD** את הפריט הקריטי.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
@@ -449,7 +452,7 @@ with tab2:
             
             eta_display_str = get_first_supply_eta(c_pn)
             
-            if eta_display_str != "ללא ETA":
+            if eta_display_str and eta_display_str != "בדיקה נדרשת":
                 try:
                     eta_dt = pd.to_datetime(eta_display_str).date()
                 except:
@@ -467,7 +470,7 @@ with tab2:
 
         formatted_missing = []
         for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "ללא ETA" else " [ללא ETA]"
+            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
             item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
             
             if c_pn == most_critical_pn:
@@ -528,7 +531,7 @@ with tab4:
         for _, r in shipping_items.head(5).iterrows():
             st.success(f"**{r['PN']}**\n\n{r['Description'][:20]}")
     with k_col4:
-        st.markdown("### ✅התקבל / סגור")
+        st.markdown("### ✅ התקבל / סגור")
         received_items = breakdown_df[breakdown_df["Status"] == "התקבל"] if not breakdown_df.empty else pd.DataFrame()
         for _, r in received_items.head(5).iterrows():
             st.success(f"**{r['PN']}** (התקבל)")
