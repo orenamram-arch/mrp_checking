@@ -113,9 +113,8 @@ def save_eta_record(pn, eta, status, supplier, comment, updated_by, webhook_url=
     
     conn.commit()
     
-    # שליחת התראה אם הוגדר Webhook
     if webhook_url:
-        msg = f"🔔 עדכון MRP חדש במערכת!\nמק\ט: {pn}\nסטטוס: {status}\nספק: {supplier}\nETA: {eta}\nעודכן ע"י: {updated_by}"
+        msg = f"🔔 עדכון MRP חדש במערכת!\nמק\"ט: {pn}\nסטטוס: {status}\nספק: {supplier}\nETA: {eta}\nעודכן ע\"י: {updated_by}"
         send_teams_notification(webhook_url, msg)
 
 def eta_color(eta_value):
@@ -201,7 +200,6 @@ portal_mode = st.sidebar.radio("בחר תצוגה:", ["מנהל מערכת מל�
 
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
 
-# הגדרת ספקים
 supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 
 if portal_mode == "פורטל קבלן משנה (אופק בלבד)":
@@ -276,11 +274,9 @@ for idx, row in mrp_shortages.iterrows():
     stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
     total_mrp_shortage = row['Total_MRP_Shortage']
     
-    # שליפת הספק הרשום במסד הנתונים עבור פריט זה
     rec_check = get_eta_record(pn)
     current_sup = rec_check[2] if rec_check else "אופק"
     
-    # סינון לפי ספק אם במצב פורטל
     if selected_supplier_filter != "הכל" and current_sup != selected_supplier_filter:
         continue
 
@@ -337,7 +333,7 @@ if not breakdown_df.empty:
         ]
 
 # ==========================================================
-# TABS FOR ENTERPRISE FEATURES (כולל ניתוח צווארי בקבוק)
+# TABS FOR ENTERPRISE FEATURES
 # ==========================================================
 tab1, tab2, tab3 = st.tabs(["📦 דשבורד חוסרים ראשי", "⚠️ ניתוח צווארי בקבוק (Bottlenecks)", "📅 מעקב ETA וספקים"])
 
@@ -398,7 +394,6 @@ with tab2:
     st.subheader("⚠️ ניתוח צווארי בקבוק (Bottleneck Analysis) בעץ המוצר")
     st.markdown("סקירה אוטומטית של רכיבים המופיעים במספר הרב ביותר של הרכבות וגורמים להשפעת רוחב על הייצור:")
     
-    # אלגוריתם זיהוי צווארי בקבוק: ספירת הופעות של כל מק"ט בכל עמודות ההרכבות
     bottleneck_rows = []
     for idx, row in df.iterrows():
         pn = str(row[PN_COL]).strip()
@@ -412,7 +407,7 @@ with tab2:
                 count_assemblies += 1
                 total_qty_needed += q
                 
-        if count_assemblies > 1: # פריט שמופיע ביותר מהרכבה אחת
+        if count_assemblies > 1:
             bottleneck_rows.append({
                 "מק\"ט": pn,
                 "תיאור": desc,
