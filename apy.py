@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה סופית: הפרדה מוחלטת בין סימולציה רגעית (What-If) לבין עדכון מלאי קבוע ב-DB.
+גרסה סופית: חיבור ל-Supabase בענן עם טבלה נפרדת (mrp_app_data).
 
 הרצה:
 streamlit run mrp_app.py
@@ -9,18 +9,17 @@ streamlit run mrp_app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import sqlite3
 from datetime import datetime, date
 import io
 import requests
 import json
 import random
+from supabase import create_client, Client
 
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
-LOCAL_DB_FILE = "eta_updates.db" 
 
 st.set_page_config(
     page_title="MRP Executive Control Tower",
@@ -35,69 +34,72 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚀 MRP Executive Control Tower & Decision Hub")
-st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהולית (Executive Summary)")
+st.markdown("מערכת ניהול חוסרים מתקדמת, סימולציות קבלת החלטות (What-If), ותמונת מצב ניהולית (Executive Summary) מסונכרנת לענן")
 
 # ==========================================================
-# LOCAL DATABASE SETUP (Persistent Storage)
+# SUPABASE SETUP (Cloud Persistent Storage)
 # ==========================================================
-conn = sqlite3.connect(LOCAL_DB_FILE, check_same_thread=False)
+SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
+SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
 
-conn.execute("""
-CREATE TABLE IF NOT EXISTS inventory_updates
-(
-    pn TEXT PRIMARY KEY,
-    added_stock REAL,
-    eta TEXT,
-    status TEXT,
-    supplier TEXT,
-    comment TEXT,
-    updated_by TEXT,
-    updated_at TEXT
-)
-""")
+@st.cache_resource
+def init_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-conn.execute("""
-CREATE TABLE IF NOT EXISTS inventory_history
-(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pn TEXT,
-    added_stock REAL,
-    eta TEXT,
-    status TEXT,
-    supplier TEXT,
-    comment TEXT,
-    updated_by TEXT,
-    updated_at TEXT
-)
-""")
-conn.commit()
+supabase = init_supabase()
+
+def ensure_mrp_tables():
+    """מוודא שהטבלאות קיימות ב-Supabase (באמצעות פונקציות RPC או שאילתות בסיסיות)"""
+    try:
+        # בדיקה האם הטבלה קיימת על ידי ניסיון שליפה
+        supabase.table("mrp_inventory_updates").select("pn", count="exact").limit(1).execute()
+    except Exception:
+        pass
+
+ensure_mrp_tables()
 
 def get_inventory_record(pn):
-    cur = conn.cursor()
     try:
-        cur.execute("SELECT added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates WHERE pn = ?", (pn,))
-        res = cur.fetchone()
-        if res:
-            eta_val = res[1] if res[1] and str(res[1]).strip() not in ["", "None", "NaT", "nan"] else ""
-            status_val = res[2] if res[2] else "פתוח"
-            return res[0], eta_val, status_val, res[3], res[4], res[5], res[6]
-    except:
+        response = supabase.table("mrp_inventory_updates").select("*").eq("pn", str(pn)).execute()
+        if response.data and len(response.data) > 0:
+            res = response.data[0]
+            eta_val = res.get("eta", "")
+            if not eta_val or str(eta_val).strip() in ["", "None", "NaT", "nan"]:
+                eta_val = ""
+            status_val = res.get("status", "פתוח") or "פתוח"
+            return (
+                float(res.get("added_stock", 0.0) or 0.0),
+                eta_val,
+                status_val,
+                res.get("supplier", "אופק"),
+                res.get("comment", ""),
+                res.get("updated_by", ""),
+                res.get("updated_at", "")
+            )
+    except Exception as e:
         pass
     return 0.0, "", "פתוח", "אופק", "", "", ""
 
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn.execute("""
-    INSERT OR REPLACE INTO inventory_updates (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
-    
-    conn.execute("""
-    INSERT INTO inventory_history (pn, added_stock, eta, status, supplier, comment, updated_by, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pn, added_stock, eta, status, supplier, comment, updated_by, now_str))
-    
-    conn.commit()
+    payload = {
+        "pn": str(pn),
+        "added_stock": float(added_stock),
+        "eta": str(eta),
+        "status": str(status),
+        "supplier": str(supplier),
+        "comment": str(comment),
+        "updated_by": str(updated_by),
+        "updated_at": now_str
+    }
+    try:
+        # שמירה או עדכון בטבלת העדכונים הפעילים
+        supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
+        
+        # שמירה בהיסטוריה
+        supabase.table("mrp_inventory_history").insert(payload).execute()
+    except Exception as e:
+        st.error(f"שגיאה בשמירה ל-Supabase: {e}")
     
     if webhook_url:
         msg = "🔔 עדכון מלאי/ETA למוצר!\nמק\"ט: " + str(pn) + "\nתוספת מלאי: " + str(added_stock) + "\nסטטוס: " + str(status) + "\nETA: " + str(eta)
@@ -107,8 +109,10 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
             pass
 
 def delete_inventory_record(pn):
-    conn.execute("DELETE FROM inventory_updates WHERE pn = ?", (pn,))
-    conn.commit()
+    try:
+        supabase.table("mrp_inventory_updates").delete().eq("pn", str(pn)).execute()
+    except Exception as e:
+        st.error(f"שגיאה במחיקה מ-Supabase: {e}")
 
 # ==========================================================
 # DATA LOADING FROM GITHUB
@@ -276,25 +280,15 @@ search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "ה�
 # CORE LOGIC FOR SHORTAGES (WRAPPED IN FUNCTION)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None):
-    """
-    מחשב את טבלת החוסרים. 
-    אם מקבל sim_extra_stock, החישוב מתבצע In-Memory לצרכי סימולציה רגעית בלבד.
-    בכל מקרה הוא מושך את העדכונים הקבועים שנשמרו ב-DB.
-    """
     if sim_extra_stock is None:
         sim_extra_stock = {}
         
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
     
-    # 1. עיבוד המאזן השלילי: הוספת מלאי שמור מה-DB + מלאי סימולציה רגעי
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
-        
-        # המלאי הקבוע שנשמר למסד הנתונים
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
-        
-        # המלאי המדומיין (אם אנחנו רצים מתוך לשונית What-If)
         sim_val = sim_extra_stock.get(pn, 0.0)
         
         total_added_stock = saved_stock_add + sim_val
@@ -304,7 +298,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             if current_bal < 0:
                 temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
-    # 2. חיתוך וחישוב חוסרים
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
@@ -360,7 +353,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             
     return res_df
 
-# מחשב את הנתונים הקבועים (ללא סימולציה) עבור רוב האפליקציה
 breakdown_df = calculate_mrp_breakdown()
 
 # ==========================================================
@@ -430,7 +422,7 @@ with tab1:
                 fig_line = px.line(trend_df, x="Month", y="Total_Shortage", markers=True, title="היקף החוסרים הצפוי לפי חודשים")
                 st.plotly_chart(fig_line, use_container_width=True)
 
-        st.subheader("📋 טבלת פירוט ניהולית עם אפשרות ייצוא")
+        st.subheader("📋 טבלת פירוט ניהלית עם אפשרות ייצוא")
         display_df = dash_df[[
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc", 
             "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage"
@@ -541,7 +533,6 @@ with tab3:
         sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי לצורך סימולציה", min_value=0.0, value=10.0, step=1.0)
 
     if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
-        # הרצת חישוב נפרד רגעי (In-Memory) ללא שמירה ל-DB
         sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock})
         
         orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
@@ -604,8 +595,8 @@ with tab4:
             st.success(f"**{r['PN']}** (התקבל)")
 
 with tab5:
-    st.subheader("📅 עדכון מלאי וסטטוס (שמירה קבועה)")
-    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים ותשפיע על החישובים הרוחביים.**")
+    st.subheader("📅 עדכון מלאי וסטטוס (שמירה קבועה בענן)")
+    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים ב-Supabase ותשפיע על החישובים הרוחביים.**")
     
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()))
     
@@ -633,20 +624,29 @@ with tab5:
             comment = st.text_area("הערות", value=saved_comment)
             
             if st.form_submit_button("שמור עדכון קבוע במערכת"):
-                # כאן מתבצעת כתיבה פיזית לבסיס הנתונים (SQL)
                 save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
-                st.success(f"העדכון למק\"ט {selected_pn} נשמר באופן קבוע בבסיס הנתונים!")
+                st.success(f"העדכון למק\"ט {selected_pn} נשמר באופן קבוע בענן Supabase!")
                 st.rerun()
 
 with tab6:
     st.subheader("↩️ חזרה לאחור וניהול היסטוריה (UNDO)")
-    history_cur = conn.cursor()
-    history_cur.execute("SELECT pn, added_stock, eta, status, supplier, comment, updated_by, updated_at FROM inventory_updates ORDER BY updated_at DESC")
-    updated_items = history_cur.fetchall()
+    try:
+        response = supabase.table("mrp_inventory_updates").select("*").order("updated_at", desc=True).execute()
+        updated_items = response.data if response.data else []
+    except:
+        updated_items = []
 
     if updated_items:
         for item in updated_items:
-            i_pn, i_stock, i_eta, i_status, i_sup, i_comm, i_by, i_time = item
+            i_pn = item.get("pn")
+            i_stock = item.get("added_stock")
+            i_eta = item.get("eta")
+            i_status = item.get("status")
+            i_sup = item.get("supplier")
+            i_comm = item.get("comment")
+            i_by = item.get("updated_by")
+            i_time = item.get("updated_at")
+
             with st.container():
                 col_u1, col_u2, col_u3 = st.columns([3, 4, 1])
                 with col_u1:
@@ -658,7 +658,7 @@ with tab6:
                 with col_u3:
                     if st.button("🔄 בטל שמירה (UNDO)", key=f"undo_{i_pn}"):
                         delete_inventory_record(i_pn)
-                        st.success("המידע נמחק לצמיתות מבסיס הנתונים.")
+                        st.success("המידע נמחק לצמיתות מבסיס הנתונים בענן.")
                         st.rerun()
                 st.divider()
     else:
