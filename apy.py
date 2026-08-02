@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 st.title("📊 MRP Control Tower & Visual Analytics Dashboard")
-st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build עם תאריכי ETA מדויקים")
+st.markdown("דשבורד ויזואלי מתקדם לניהול חוסרים, ניתוח תוכניות ייצור וסימולציית Clear To Build עם ETA מדויק")
 
 # ==========================================================
 # LOCAL DATABASE SETUP (Persistent Storage)
@@ -194,32 +194,28 @@ asm_components = {}
 for col in valid_assemblies:
     asm_components[col] = df[pd.to_numeric(df[col], errors='coerce') > 0]
 
-# שורת התאריכים באקסל הגולמי (שורה 30 באקסל = אינדקס 2) מעמודות CC ועד CZ (אינדקסים 80 עד 103 או מותאם מדויק)
-# נגדיר את שורת התאריכים בדיוק לפי הטווח שממנו מתחילות עמודות האספקה (CC = עמודה 80 בערך)
-raw_eta_dates = df_raw.iloc[2, :].values
+raw_eta_dates = df_raw.iloc[2, 108:132].values
 
 def get_first_supply_eta(pn):
-    # קודם נבדוק אם יש עדכון ידני ב-DB המקומי
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
         
-    # נחפש את שורת הפריט בטבלה הגולמית ונרכוש את הערך הראשון הגדול מ-0 בעמודות האספקה (CC עד CZ - אינדקסים 80 עד 104 בקירוב)
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
-        # נרוץ על עמודות CC (80) עד CZ (104) או טווח רחב יותר כדי למצוא את החודש המדויק שבו יש הגעה ראשונה
-        for col_pos in range(80, 108):
+        for c_idx, col_pos in enumerate(range(108, 132)):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
                 if pd.notnull(val) and val != '' and val != 'NaN':
                     q = float(val)
                     if q > 0:
-                        # מציאת התאריך המדויק משורה 30 (אינדקס 2) באותה עמודה בדיוק
-                        date_val = raw_eta_dates[col_pos]
+                        date_val = raw_eta_dates[c_idx]
                         if pd.notnull(date_val):
                             dt = pd.to_datetime(date_val)
-                            return dt.strftime("%Y-%m")
+                            # הפחתת חודש אחד מהתוצאה כדי לתקן את ההסטה
+                            corrected_dt = dt - pd.DateOffset(months=1)
+                            return corrected_dt.strftime("%Y-%m")
             except:
                 pass
     return "ללא ETA"
@@ -411,7 +407,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}")
-    st.markdown("המערכת מחלצת את מועד ההגעה המדויק ישירות מעמודות ה-ETA באקסל. הפריט הקריטי מודגש ב-**BOLD**.")
+    st.markdown("המערכת מציגה את מועד ההגעה המתוקן (ספטמבר 2026), מציגה את הרכיבים החסרים בלבד, ומדגישה ב-**BOLD** את הפריט הקריטי ביותר.")
 
     assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
