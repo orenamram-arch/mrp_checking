@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת: סינון קפדני המציג כחוסר רק שורות שבהן הביקוש להרכבה עולה בפועל על המלאי הזמין.
+גרסה מעודכנת: דיוק מוחלט בחישוב היחידות החסרות (Shortage) לכל פריט והרכבה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -255,7 +255,7 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר מק\"ט/�
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================================
-# 6. לוגיקת החוסרים המעודכנת (סינון מלאי מקומי עודף)
+# 6. לוגיקת החוסרים המדויקת
 # ==========================================================================
 def calculate_shortages_for_stock(extra_stock_dict=None):
     extra_stock_dict = extra_stock_dict or {}
@@ -265,37 +265,6 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
     plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
 
     b_rows = []
-    for idx, row in temp_df.iterrows():
-        pn = str(row[PN_COL]).strip()
-        if not pn or pn == 'nan':
-            continue
-            
-        desc = str(row[DESC_COL]) if pd.notnull(row[DESC_COL]) else ""
-        item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns and pd.notnull(row[ITEM_TYPE_COL]) else ""
-        
-        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn)
-        sim_add = extra_stock_dict.get(pn, 0.0)
-        total_stock = base_stock + saved_stock_add + sim_add
-        
-        _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn)
-        
-        # בדיקת דרישה לכל הרכבה בנפרד וסינון פריטים שיש להם כיסוי מלא
-        for asm in filtered_assembly_cols:
-            qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
-            if qty_per_asm > 0:
-                asm_build_qty = plan_dict.get(asm, 0.0)
-                required_demand = qty_per_asm * asm_build_qty
-                if required_demand <= 0:
-                    continue
-                
-                # אם סך המלאי הזמין נופל מהביקוש של ההרכבה הזו – זהו חוסר אמיתי
-                # לצורך הדוגמה נחשב את החוסר היחסי או המצרפי
-                # כאן נציג רק אם המלאי לא מכסה את הביקוש המצרפי או הספציפי
-                pass
-
-    # נחזיר את שורות החוסר האמיתיות שבהן הדרישה עולה על המלאי בפועל
-    # נשתמש בלוגיקת ה-MRP הרגילה אך ננפה שורות שבהן המלאי מכסה את ההרכבה
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
@@ -319,7 +288,6 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
         sim_add = extra_stock_dict.get(pn, 0.0)
         total_available_stock = stock + saved_stock_add + sim_add
         
-        total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn)
         
         for asm in filtered_assembly_cols:
@@ -330,17 +298,17 @@ def calculate_shortages_for_stock(extra_stock_dict=None):
                 if required_demand <= 0:
                     continue
                 
-                # בדיקה האם המלאי הזמין מכסה במלואו את הדרישה של ההרכבה הזו
-                # אם המלאי גדול או שווה לביקוש הספציפי להרכבה זו – לא נציג אותה כחוסר!
-                if total_available_stock >= required_demand:
-                    continue
+                # חישוב מדויק של חוסר ספציפי להרכבה זו
+                specific_shortage = max(0.0, required_demand - total_available_stock)
+                if specific_shortage <= 0:
+                    continue # יש מספיק מלאי להרכבה זו, לא נציג כחוסר!
                 
                 asm_desc = assembly_mapping.get(asm, asm)
                 b_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
                     "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
-                    "Stock": total_available_stock, "Total_MRP_Shortage": total_mrp_shortage
+                    "Stock": total_available_stock, "Total_MRP_Shortage": specific_shortage
                 })
 
     res_df = pd.DataFrame(b_rows)
@@ -424,9 +392,9 @@ with TABS[0]:
             "PN": "מק״ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
             "Status": "סטטוס טיפול", "Assembly": "קוד הרכבה", "Assembly_Desc": "תיאור הרכבה",
             "Qty_Per_Assembly": "כמות נדרשת", "Assembly_Monthly_Build": "ת. ייצור",
-            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי זמין", "Total_MRP_Shortage": "סך חוסר מצרפי"
+            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי זמין", "Total_MRP_Shortage": "חוסר מדויק"
         })
-        st.dataframe(display_df.sort_values(by="סך חוסר מצרפי", ascending=False), use_container_width=True)
+        st.dataframe(display_df.sort_values(by="חוסר מדויק", ascending=False), use_container_width=True)
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -468,7 +436,7 @@ with TABS[1]:
         for _, s_row in asm_shortages.iterrows():
             c_pn = str(s_row["PN"]).strip()
             c_desc = str(s_row["Description"]).strip()
-            s_qty = s_row["Required_Demand"] - s_row["Stock"] # חוסר ספציפי להרכבה זו
+            s_qty = s_row["Total_MRP_Shortage"]
             if s_qty <= 0:
                 continue
                 
@@ -552,7 +520,7 @@ with TABS[2]:
             remaining_blockers = sim_breakdown_df[sim_breakdown_df["Assembly"].isin(related_asm)]
             if not remaining_blockers.empty:
                 for _, r in remaining_blockers.iterrows():
-                    st.warning(f"מק\"ט חוסר נוסף: `{r['PN']}` ({r['Description'][:15]}) בהרכבה {r['Assembly']} - חסר: {r['Required_Demand'] - r['Stock']:g}")
+                    st.warning(f"מק\"ט חוסר נוסף: `{r['PN']}` ({r['Description'][:15]}) בהרכבה {r['Assembly']} - חסר: {r['Total_MRP_Shortage']:g}")
             else:
                 st.success("אין פריטים נוספים שחוסמים את ההרכבות הרלוונטיות!")
         else:
