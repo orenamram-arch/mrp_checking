@@ -1,10 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתקדמת הכוללת:
-1. שליפת ETA מדויקת מה-MRP ללא סטייה.
-2. הצגת שעון ישראל מעודכן (כולל תיקון אזור זמן).
-3. ניהול דחיות ספקים (Delay Tracking).
-4. לשונית WIP חדשה לגרוע ביקוש הרכבות שירדו לייצור (חישוב לפי QPA).
+גרסה מתקדמת ומדויקת:
+1. תיקון ETA (הורדת חודש אחד להתאמה מדויקת לדוח ה-MRP).
+2. שעון ישראל מעודכן.
+3. ניהול דחיות ספקים ו-WIP.
 
 הרצה:
 streamlit run mrp_app.py
@@ -32,7 +31,7 @@ st.set_page_config(
 )
 
 # ==========================================================
-# GLOBAL THEME / CSS (AUTO LIGHT/DARK MODE SUPPORT)
+# GLOBAL THEME / CSS
 # ==========================================================
 PRIMARY = "#4F46E5"      # indigo
 PRIMARY_DARK = "#3730A3"
@@ -45,7 +44,6 @@ st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap');
 
-/* הגדרת RTL לתוכן הראשי ולסיידבר */
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stSidebarContent"] {{
     font-family: 'Assistant', sans-serif;
@@ -56,11 +54,9 @@ st.markdown(f"""
     font-family: 'Assistant', sans-serif;
 }}
 
-/* Hide default streamlit chrome */
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 
-/* Header banner */
 .hero-banner {{
     background: linear-gradient(120deg, {PRIMARY} 0%, {PRIMARY_DARK} 45%, {ACCENT} 100%);
     padding: 28px 32px;
@@ -80,7 +76,6 @@ footer {{visibility: hidden;}}
     margin-top: 6px;
 }}
 
-/* KPI cards */
 .kpi-card {{
     background-color: var(--secondary-background-color);
     color: var(--text-color);
@@ -403,10 +398,13 @@ def get_base_mrp_eta(pn):
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
                             if isinstance(date_val, datetime):
-                                return date_val.strftime("%Y-%m")
+                                # הורדת חודש אחד בדיוק להתאמה מלאה למציאות
+                                corrected_dt = date_val - pd.DateOffset(months=1)
+                                return corrected_dt.strftime("%Y-%m")
                             dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
                             if pd.notnull(dt) and dt.year >= 2024:
-                                return dt.strftime("%Y-%m")
+                                corrected_dt = dt - pd.DateOffset(months=1)
+                                return corrected_dt.strftime("%Y-%m")
             except:
                 pass
     return "בדיקה נדרשת"
@@ -579,7 +577,6 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 ])
 
 with tab1:
-    # הצגת התאריך והשעה העכשווים (שעון ישראל = שרת UTC + 3 שעות)
     israel_time = datetime.utcnow() + timedelta(hours=3)
     current_time_str = israel_time.strftime("%d/%m/%Y | %H:%M:%S")
     st.markdown(f"""
