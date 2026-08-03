@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מותאמת ומהירה: שליפת נתונים מרוכזת מ-Supabase (במקום פניות בודדות) למניעת איטיות.
-כולל ניהול ETA, דחיות ספקים (Delay Tracking) ולשונית מעקב ETA ייעודית.
+כולל ניהול ETA מדויק, דחיות ספקים (Delay Tracking) ולשונית מעקב ETA ייעודית.
 
 הרצה:
 streamlit run mrp_app.py
@@ -356,7 +356,7 @@ for col in valid_assemblies:
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
 def get_base_mrp_eta(pn):
-    """שולף את ה-ETA המקורי שמגיע ישירות מקובץ ה-MRP של גוויטה/GitHub"""
+    """שולף את ה-ETA המקורי ישירות מהעמודות של קובץ ה-MRP בדיוק לפי התאריך באקסל ללא סטייה"""
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
@@ -370,7 +370,10 @@ def get_base_mrp_eta(pn):
                     if q > 0:
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
-                            dt = pd.to_datetime(date_val, errors='coerce')
+                            # המרה מדויקת שתואמת את ערך התאריך באקסל מבלי להוסיף חודש
+                            if isinstance(date_val, datetime):
+                                return date_val.strftime("%Y-%m")
+                            dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
                             if pd.notnull(dt) and dt.year >= 2024:
                                 return dt.strftime("%Y-%m")
             except:
@@ -378,7 +381,7 @@ def get_base_mrp_eta(pn):
     return "בדיקה נדרשת"
 
 def get_first_supply_eta(pn, inv_cache=None):
-    """מחזיר את ה-ETA הפעיל: מעודכן מהענן אם קיים, אחרת מקורי מה-MRP"""
+    """מחזיר את ה-ETA הפעיל: מעודכן מהענן אם קיים, אחרת מקורי מדויק מה-MRP"""
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
@@ -526,7 +529,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
 breakdown_df = calculate_mrp_breakdown()
 
 # ==========================================================
-# TABS (Updated with new ETA Tracking Tab)
+# TABS
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Executive Dashboard",
@@ -953,7 +956,6 @@ with tab6:
         else:
             curr_eta_fmt = orig_eta
 
-        # חישוב הערת דחייה בהתאם להנחיה שלך
         if orig_eta != "בדיקה נדרשת" and curr_eta_fmt != "בדיקה נדרשת" and curr_eta_fmt != orig_eta:
             note = f"נדחה מחודש {orig_eta} לחודש {curr_eta_fmt}"
         elif curr_eta_fmt != "בדיקה נדרשת" and orig_eta == "בדיקה נדרשת":
@@ -975,7 +977,6 @@ with tab6:
     eta_df = pd.DataFrame(eta_table_rows)
     
     if not eta_df.empty:
-        # אפשרות סינון מהירה בתוך הלשונית
         col_s1, col_s2 = st.columns(2)
         with col_s1:
             filter_delayed_only = st.checkbox("הצג פריטים שנדחו בלבד")
