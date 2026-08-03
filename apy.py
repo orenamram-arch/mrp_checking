@@ -44,8 +44,8 @@ st.markdown(f"""
 @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap');
 
 /* חשוב: ה-RTL מוגבל לתוכן הראשי בלבד (ולא לכל ה-DOM כולל ה-sidebar החיצוני),
-   כי הפעלת direction:rtl על הקונטיינר החיצוני של הסיידבר שוברת את אנימציית
-   ה-slide (transform) שלו במובייל וגורמת לו "להיתקע" באמצע המסך. */
+    כי הפעלת direction:rtl על הקונטיינר החיצוני של הסיידבר שוברת את אנימציית
+    ה-slide (transform) שלו במובייל וגורמת לו "להיתקע" באמצע המסך. */
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stSidebarContent"] {{
     font-family: 'Assistant', sans-serif;
@@ -81,7 +81,7 @@ footer {{visibility: hidden;}}
 }}
 
 /* KPI cards - משתמשים במשתני התמה של Streamlit, כך שהצבעים מתאימים אוטומטית
-   לטתמה הבהירה/כהה שהמשתמש בוחר (כולל "Auto" לפי המערכת) */
+    לטתמה הבהירה/כהה שהמשתמש בוחר (כולל "Auto" לפי המערכת) */
 .kpi-card {{
     background: var(--secondary-background-color, #161B2E);
     color: var(--text-color, inherit);
@@ -588,14 +588,14 @@ with tab1:
         with col_g1:
             st.markdown("##### 🥧 התפלגות חוסרים לפי סוג פריט")
             fig_pie = px.pie(dash_df, names="Item_Type", values="Total_MRP_Shortage", hole=0.5,
-                              color_discrete_sequence=COLOR_SEQ)
+                             color_discrete_sequence=COLOR_SEQ)
             fig_pie.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with col_g2:
             st.markdown("##### 🏭 התפלגות חוסרים לפי ספק")
             fig_sup = px.pie(dash_df, names="Supplier", values="Total_MRP_Shortage", hole=0.5,
-                              color_discrete_sequence=COLOR_SEQ)
+                             color_discrete_sequence=COLOR_SEQ)
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
 
@@ -605,14 +605,14 @@ with tab1:
         with col_g3:
             st.markdown("##### 🔝 Top 10 מק\"טים עם החוסר הגדול ביותר")
             top10 = (dash_df.drop_duplicates(subset=["PN"])
-                             .sort_values("Total_MRP_Shortage", ascending=False)
-                             .head(10))
+                            .sort_values("Total_MRP_Shortage", ascending=False)
+                            .head(10))
             fig_top = px.bar(top10, x="Total_MRP_Shortage", y="PN", orientation="h",
-                              color="Total_MRP_Shortage", color_continuous_scale=["#F59E0B", "#EF4444"],
-                              text="Total_MRP_Shortage", hover_data=["Description", "Supplier", "Status"])
+                             color="Total_MRP_Shortage", color_continuous_scale=["#F59E0B", "#EF4444"],
+                             text="Total_MRP_Shortage", hover_data=["Description", "Supplier", "Status"])
             fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
             fig_top.update_layout(template=PLOTLY_TEMPLATE, height=380, yaxis={'categoryorder': 'total ascending'},
-                                   margin=dict(t=10, b=10, l=10, r=10), coloraxis_showscale=False)
+                                  margin=dict(t=10, b=10, l=10, r=10), coloraxis_showscale=False)
             st.plotly_chart(fig_top, use_container_width=True)
 
         with col_g4:
@@ -641,7 +641,7 @@ with tab1:
             trend_df = pd.DataFrame(trend_rows)
             if not trend_df.empty:
                 fig_line = px.area(trend_df, x="Month", y="Total_Shortage", markers=True,
-                                    color_discrete_sequence=[ACCENT])
+                                   color_discrete_sequence=[ACCENT])
                 fig_line.update_traces(line=dict(width=3))
                 fig_line.update_layout(template=PLOTLY_TEMPLATE, height=380, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_line, use_container_width=True)
@@ -652,7 +652,7 @@ with tab1:
         status_counts.columns = ["Status", "Count"]
         if not status_counts.empty:
             fig_funnel = px.funnel(status_counts.sort_values("Count", ascending=False), x="Count", y="Status",
-                                    color_discrete_sequence=[PRIMARY])
+                                   color_discrete_sequence=[PRIMARY])
             fig_funnel.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_funnel, use_container_width=True)
 
@@ -672,7 +672,6 @@ with tab1:
             if vmax <= 0:
                 return ""
             ratio = min(1.0, float(val) / vmax)
-            # מ-כתום בהיר עד אדום כהה
             r = 239
             g = int(180 - ratio * 140)
             b = int(120 - ratio * 100)
@@ -681,6 +680,7 @@ with tab1:
         sorted_display_df = display_df.sort_values(by="סך חוסר", ascending=False)
         max_shortage = sorted_display_df["סך חוסר"].max() if not sorted_display_df.empty else 0
 
+        # שימוש ב- .map במקום .applymap כדי למנוע אזהרות ושגיאות תאימות בגרסאות Pandas חדשות
         styled = sorted_display_df.style.map(
             lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]
         )
@@ -778,9 +778,9 @@ with tab2:
             st.markdown("##### 🚦 מוכנות הרכבות (CTB מול תוכנית)")
             cap_df["גירעון"] = cap_df["תוכנית ייצור"] - cap_df["ניתן לייצר בפועל (CTB)"]
             fig_ctb = px.bar(cap_df, x="קוד הרכבה", y=["ניתן לייצר בפועל (CTB)", "גירעון"],
-                              color_discrete_sequence=[SUCCESS, DANGER], barmode="stack")
+                             color_discrete_sequence=[SUCCESS, DANGER], barmode="stack")
             fig_ctb.update_layout(template=PLOTLY_TEMPLATE, height=340, margin=dict(t=10, b=10, l=10, r=10),
-                                   legend_title_text="")
+                                  legend_title_text="")
             st.plotly_chart(fig_ctb, use_container_width=True)
         with col_c2:
             st.markdown("##### 📋 טבלת CTB מפורטת")
@@ -850,10 +850,10 @@ with tab3:
                 ]
             })
             fig_comp = px.bar(comp_df, x="מצב", y="סך גירעון", color="מצב",
-                               color_discrete_sequence=[DANGER, SUCCESS], text="סך גירעון")
+                             color_discrete_sequence=[DANGER, SUCCESS], text="סך גירעון")
             fig_comp.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
             fig_comp.update_layout(template=PLOTLY_TEMPLATE, height=320, showlegend=False,
-                                    margin=dict(t=10, b=10, l=10, r=10))
+                                   margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_comp, use_container_width=True)
 
 with tab4:
