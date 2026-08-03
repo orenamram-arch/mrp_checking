@@ -1,9 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח (גירעון באוגוסט OR ספטמבר וכו').
-2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמו 16 ו-4).
-3. טבלת CTB מטריציונית וגרף הרכבות מפורט.
+1. הפרדה מלאה: העלאה נפרדת לעדכון ETA מקובץ ספק, והעלאה נפרדת לעדכון כמויות מלאי מקובץ ספק.
+2. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח.
+3. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת.
+4. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
 streamlit run mrp_app.py
@@ -516,40 +517,68 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר א
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
-# EXTERNAL ETA FILE UPLOAD (SUPPLIER FILE)
+# SEPARATED FILE UPLOADS: ETA FILE vs INVENTORY FILE
 # ==========================================================
 st.sidebar.divider()
-st.sidebar.markdown("##### 📥 ייבוא קובץ ETA מעודכן מהספק")
-uploaded_eta_file = st.sidebar.file_uploader("העלה קובץ Excel (PN, ETA, Qty)", type=["xlsx", "xls"])
+st.sidebar.markdown("##### 📥 עדכון ETA מקובץ ספק")
+uploaded_eta_file = st.sidebar.file_uploader("העלה קובץ ETA (עמודות: PN, ETA)", type=["xlsx", "xls"], key="eta_uploader")
 if uploaded_eta_file is not None:
     try:
-        sup_df = pd.read_excel(uploaded_eta_file)
-        if st.sidebar.button("⚡ עדכן אוטומטית לפי קובץ ספק"):
-            updated_count = 0
-            for _, s_row in sup_df.iterrows():
+        eta_df_sup = pd.read_excel(uploaded_eta_file)
+        if st.sidebar.button("⚡ עדכן ETA בלבד"):
+            eta_count = 0
+            for _, s_row in eta_df_sup.iterrows():
                 p_code = str(s_row.iloc[0]).strip()
-                new_eta = str(s_row.iloc[1]).strip()
-                new_qty = float(s_row.iloc[2]) if len(s_row) > 2 and pd.notnull(s_row.iloc[2]) else 0.0
+                new_eta = str(s_row.iloc[1]).strip() if len(s_row) > 1 and pd.notnull(s_row.iloc[1]) else ""
 
-                if p_code and p_code != 'nan':
+                if p_code and p_code != 'nan' and new_eta and new_eta not in ["nan", "NaT", "None"]:
                     curr_stock, _, curr_status, curr_sup, curr_comm, _, _ = get_inventory_record(p_code)
                     save_inventory_record(
                         pn=p_code,
-                        added_stock=curr_stock + new_qty if new_qty > 0 else curr_stock,
+                        added_stock=curr_stock,
                         eta=new_eta,
                         status=curr_status if curr_status != "פתוח" else "הוזמן",
                         supplier=curr_sup,
-                        comment=f"{curr_comm} | עודכן מקובץ ספק חיצוני",
-                        updated_by="Supplier File",
+                        comment=f"{curr_comm} | עודכן ETA מקובץ ספק",
+                        updated_by="ETA File Upload",
                         webhook_url=webhook_url
                     )
-                    updated_count += 1
-            st.sidebar.success(f"עודכנו בהצלחה {updated_count} פריטים מקובץ הספק!")
+                    eta_count += 1
+            st.sidebar.success(f"עודכן ETA בהצלחה עבור {eta_count} פריטים!")
     except Exception as e:
-        st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
+        st.sidebar.error(f"שגיאה בקריאת קובץ ה-ETA: {e}")
+
+st.sidebar.divider()
+st.sidebar.markdown("##### 📥 עדכון מלאי מקובץ ספק")
+uploaded_inv_file = st.sidebar.file_uploader("העלה קובץ מלאי (עמודות: PN, Stock / Qty)", type=["xlsx", "xls"], key="inv_uploader")
+if uploaded_inv_file is not None:
+    try:
+        inv_df_sup = pd.read_excel(uploaded_inv_file)
+        if st.sidebar.button("⚡ עדכן כמויות מלאי בלבד"):
+            inv_count = 0
+            for _, s_row in inv_df_sup.iterrows():
+                p_code = str(s_row.iloc[0]).strip()
+                new_stock = float(s_row.iloc[1]) if len(s_row) > 1 and pd.notnull(s_row.iloc[1]) else 0.0
+
+                if p_code and p_code != 'nan' and new_stock > 0:
+                    curr_stock, curr_eta, curr_status, curr_sup, curr_comm, _, _ = get_inventory_record(p_code)
+                    save_inventory_record(
+                        pn=p_code,
+                        added_stock=curr_stock + new_stock,
+                        eta=curr_eta,
+                        status=curr_status,
+                        supplier=curr_sup,
+                        comment=f"{curr_comm} | הוספת מלאי בסך {new_stock} מקובץ ספק",
+                        updated_by="Inventory File Upload",
+                        webhook_url=webhook_url
+                    )
+                    inv_count += 1
+            st.sidebar.success(f"עודכן מלאי בהצלחה עבור {inv_count} פריטים!")
+    except Exception as e:
+        st.sidebar.error(f"שגיאה בקריאת קובץ המלאי: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (OR Condition Across MRP Columns DE..EB)
+# CORE LOGIC FOR SHORTAGES (OR Condition Across MRP Columns)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -560,7 +589,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
-    # איסוף מדויק של עמודות ה-MRP שמתאימות לחודשים הנבחרים בטווח (DE עד EB וכו')
     target_month_cols_map = {}
     for m_c in MONTH_COLS:
         if pd.notnull(m_c):
@@ -573,10 +601,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
 
     temp_df = df.copy()
 
-    # לוגיקת OR חודשית מול עמודות ה-MRP:
-    # לכל פריט, בודקים האם באחד החודשים בטווח הנבחר (עמודות MRP ספציפיות) הערך הוא שלילי.
-    # אם תנאי ה-OR מתקיים (שלילי בחודש א' OR שלילי בחודש ב'), הפריט מסומן כחסר,
-    # וכמות החוסר נקבעת כגירעון המרבי באותו טווח.
+    # לוגיקת OR חודשית מול עמודות ה-MRP בטווח הנבחר:
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
@@ -592,9 +617,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
             col_name = target_month_cols_map.get(ym)
             if col_name and col_name in temp_df.columns:
                 mrp_val = pd.to_numeric(row[col_name], errors='coerce') or 0
-                
-                # אם הערך בדוח ה-MRP עצמו הוא שלילי (או לאחר שילוב תוספת מלאי זמין אם נדרש)
-                # נבצע בדיקת OR: האם MRP < 0 באחד החודשים בטווח
                 effective_mrp_val = mrp_val + total_added_stock if mrp_val < 0 else mrp_val
 
                 if effective_mrp_val < 0:
