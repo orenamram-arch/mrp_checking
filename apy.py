@@ -1,10 +1,11 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. הפרדה מלאה: העלאה נפרדת לעדכון ETA מקובץ ספק, והעלאה נפרדת לעדכון כמויות מלאי מקובץ ספק.
-2. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח.
-3. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת.
-4. טבלת CTB מטריציונית וגרף הרכבות מפורט.
+1. תבניות Excel (Templates) להורדה ישירה מתוך הסיידבר למניעת טעויות בסדר העמודות.
+2. ייבוא ETA מתקדם הכולל גם תאריך וגם כמות אספקה.
+3. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח.
+4. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת.
+5. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
 streamlit run mrp_app.py
@@ -517,44 +518,73 @@ selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר א
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
-# SEPARATED FILE UPLOADS: ETA FILE vs INVENTORY FILE
+# SEPARATED FILE UPLOADS & TEMPLATE DOWNLOADS
 # ==========================================================
 st.sidebar.divider()
-st.sidebar.markdown("##### 📥 עדכון ETA מקובץ ספק")
-uploaded_eta_file = st.sidebar.file_uploader("העלה קובץ ETA (עמודות: PN, ETA)", type=["xlsx", "xls"], key="eta_uploader")
+st.sidebar.markdown("##### 📥 עדכון ETA וכמות אספקה מקובץ ספק")
+
+# יצירת תבנית Excel להורדה לעדכון ETA וכמות
+eta_template_df = pd.DataFrame(columns=["PN", "ETA", "Qty"])
+eta_template_output = io.BytesIO()
+with pd.ExcelWriter(eta_template_output, engine='openpyxl') as writer:
+    eta_template_df.to_excel(writer, index=False, sheet_name='ETA_Template')
+st.sidebar.download_button(
+    label="📄 הורד תבנית Excel לעדכון ETA",
+    data=eta_template_output.getvalue(),
+    file_name="ETA_Update_Template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+uploaded_eta_file = st.sidebar.file_uploader("העלה קובץ ETA (עמודות: PN, ETA, Qty)", type=["xlsx", "xls"], key="eta_uploader")
 if uploaded_eta_file is not None:
     try:
         eta_df_sup = pd.read_excel(uploaded_eta_file)
-        if st.sidebar.button("⚡ עדכן ETA בלבד"):
+        if st.sidebar.button("⚡ עדכן ETA וכמות אספקה"):
             eta_count = 0
             for _, s_row in eta_df_sup.iterrows():
                 p_code = str(s_row.iloc[0]).strip()
                 new_eta = str(s_row.iloc[1]).strip() if len(s_row) > 1 and pd.notnull(s_row.iloc[1]) else ""
+                new_supply_qty = float(s_row.iloc[2]) if len(s_row) > 2 and pd.notnull(s_row.iloc[2]) else 0.0
 
                 if p_code and p_code != 'nan' and new_eta and new_eta not in ["nan", "NaT", "None"]:
                     curr_stock, _, curr_status, curr_sup, curr_comm, _, _ = get_inventory_record(p_code)
+                    updated_total_stock = curr_stock + new_supply_qty if new_supply_qty > 0 else curr_stock
+
                     save_inventory_record(
                         pn=p_code,
-                        added_stock=curr_stock,
+                        added_stock=updated_total_stock,
                         eta=new_eta,
                         status=curr_status if curr_status != "פתוח" else "הוזמן",
                         supplier=curr_sup,
-                        comment=f"{curr_comm} | עודכן ETA מקובץ ספק",
-                        updated_by="ETA File Upload",
+                        comment=f"{curr_comm} | אספקה בסך {new_supply_qty} בתאריך ETA {new_eta} מקובץ ספק",
+                        updated_by="ETA & Qty File Upload",
                         webhook_url=webhook_url
                     )
                     eta_count += 1
-            st.sidebar.success(f"עודכן ETA בהצלחה עבור {eta_count} פריטים!")
+            st.sidebar.success(f"עודכנו בהצלחה ETA וכמויות אספקה עבור {eta_count} שורות!")
     except Exception as e:
         st.sidebar.error(f"שגיאה בקריאת קובץ ה-ETA: {e}")
 
 st.sidebar.divider()
-st.sidebar.markdown("##### 📥 עדכון מלאי מקובץ ספק")
-uploaded_inv_file = st.sidebar.file_uploader("העלה קובץ מלאי (עמודות: PN, Stock / Qty)", type=["xlsx", "xls"], key="inv_uploader")
+st.sidebar.markdown("##### 📥 עדכון מלאי כללי מקובץ ספק")
+
+# יצירת תבנית Excel להורדה לעדכון מלאי כללי
+inv_template_df = pd.DataFrame(columns=["PN", "Stock"])
+inv_template_output = io.BytesIO()
+with pd.ExcelWriter(inv_template_output, engine='openpyxl') as writer:
+    inv_template_df.to_excel(writer, index=False, sheet_name='Inventory_Template')
+st.sidebar.download_button(
+    label="📄 הורד תבנית Excel לעדכון מלאי",
+    data=inv_template_output.getvalue(),
+    file_name="Inventory_Update_Template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+uploaded_inv_file = st.sidebar.file_uploader("העלה קובץ מלאי כללי (עמודות: PN, Stock)", type=["xlsx", "xls"], key="inv_uploader")
 if uploaded_inv_file is not None:
     try:
         inv_df_sup = pd.read_excel(uploaded_inv_file)
-        if st.sidebar.button("⚡ עדכן כמויות מלאי בלבד"):
+        if st.sidebar.button("⚡ עדכן כמויות מלאי כלליות"):
             inv_count = 0
             for _, s_row in inv_df_sup.iterrows():
                 p_code = str(s_row.iloc[0]).strip()
@@ -568,12 +598,12 @@ if uploaded_inv_file is not None:
                         eta=curr_eta,
                         status=curr_status,
                         supplier=curr_sup,
-                        comment=f"{curr_comm} | הוספת מלאי בסך {new_stock} מקובץ ספק",
-                        updated_by="Inventory File Upload",
+                        comment=f"{curr_comm} | הוספת מלאי כללי בסך {new_stock} מקובץ ספק",
+                        updated_by="General Inventory File Upload",
                         webhook_url=webhook_url
                     )
                     inv_count += 1
-            st.sidebar.success(f"עודכן מלאי בהצלחה עבור {inv_count} פריטים!")
+            st.sidebar.success(f"עודכן מלאי כללי בהצלחה עבור {inv_count} פריטים!")
     except Exception as e:
         st.sidebar.error(f"שגיאה בקריאת קובץ המלאי: {e}")
 
