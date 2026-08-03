@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. התאמת תצוגת תוכנית העבודה והגרפים להכפלת יחסי הקשר למערכת (לפי רשימת ה-PN שבתמונה: 4 או 16), תוך שמירת חישוב חוסרי הבנים המקורי באקסל ללא כפילות.
-2. ניהול WIP מצטבר (הוספה על קיים) עם בדיקת זמינות היררכית ואינדיקציות ברורות.
-3. טבלת CTB מטריציונית וקישורי מפיצים מלאים.
+1. התאמת חישוב הבנים של ההרכבות בהתחשב במקדם הקשר למערכת (חלוקה במקדם הקשר כדי להתאים בין תוכנית המערכות לבנים באקסל).
+2. ניהול WIP מצטבר עם בדיקות היררכיות מלאות וחיווי ברור.
+3. טבלת CTB מטריציונית וגרף השוואה מעודכן.
 
 הרצה:
 streamlit run mrp_app.py
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 
-# מילון מקדמי הקשר למערכת עבור ההרכבות הספציפיות (לפי טבלת יחסי הקשר)
+# מילון מקדמי הקשר למערכת עבור ההרכבות הספציפיות
 ASSEMBLY_SYSTEM_FACTORS = {
     "1096G860-002": 4,
     "1093U447-001": 4,
@@ -358,13 +358,12 @@ for r in range(3, min(24, df_raw.shape[0])):
                         q_val = float(qty)
                         if q_val > 0:
                             dt = pd.to_datetime(date_val)
-                            # תצוגה / תוכנית העבודה מוכפלת במקדם הקשר למערכת לפי דרישת המשתמש
                             displayed_build_qty = q_val * system_multiplier
                             plan_rows.append({
                                 "Assembly_PN": clean_asm_pn,
                                 "YearMonth": dt.strftime("%Y-%m"),
                                 "Build_Qty": displayed_build_qty,
-                                "Raw_Build_Qty": q_val  # נשמר לצורך חישובי היררכיה פנימיים אם נדרש
+                                "Raw_Build_Qty": q_val
                             })
                     except:
                         pass
@@ -603,12 +602,16 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
+    # שימוש בתוכנית הגולמית (Raw) לצורך חישובי היררכיית הבנים, כיוון שהאקסל כבר מכיל את הבנים מוכפלים
     month_plan = assembly_plan_df[assembly_plan_df["YearMonth"].isin(target_yms)]
-    plan_dict = month_plan.groupby("Assembly_PN")["Build_Qty"].sum().to_dict()
+    plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
-            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - wip_qty)
+            # המרת WIP ממוכפל לגולמי לצורך הפחתה נכונה מול האקסל
+            sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_wip, 1)
+            raw_wip_qty = wip_qty / sys_factor
+            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
 
     breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
@@ -639,7 +642,8 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
                 breakdown_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
+                    "Assembly_Monthly_Build": asm_build_qty * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1), # תצוגה מוכפלת
+                    "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
                 })
@@ -839,7 +843,6 @@ with tab2:
 
         has_any_build = False
 
-        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית מוכפלת, ניתן לייצור בפועל פחות WIP, WIP) בהתחלה
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
@@ -885,7 +888,6 @@ with tab2:
                     "WIP": current_wip_qty
                 })
 
-        # שלב 2: איסוף וריכוז עמודות הסטטוס והחוסרים בסוף
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
@@ -935,7 +937,6 @@ with tab2:
         matrix_df = pd.DataFrame(matrix_rows)
         st.dataframe(matrix_df, use_container_width=True, height=420)
 
-        # הצגת גרף מפורט לפי הרכבה ותיאור ההרכבה בציר ה-X
         if chart_assembly_data:
             chart_df = pd.DataFrame(chart_assembly_data)
             chart_melted = chart_df.melt(
