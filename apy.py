@@ -249,15 +249,7 @@ def get_inventory_record(pn, cache=None):
     all_recs = cache if cache is not None else fetch_all_inventory_records()
     res = all_recs.get(str(pn).strip())
     if res:
-        return (
-            res["added_stock"],
-            res["eta"],
-            res["status"],
-            res["supplier"],
-            res["comment"],
-            res["updated_by"],
-            res["updated_at"]
-        )
+        return (res["added_stock"], res["eta"], res["status"], res["supplier"], res["comment"], res["updated_by"], res["updated_at"])
     return 0.0, "", "פתוח", "אופק", "", "", ""
 
 @st.cache_data(ttl=5)
@@ -275,11 +267,7 @@ def save_wip_record(assembly_pn, wip_qty):
     existing_qty = current_wip_dict.get(str(assembly_pn), 0.0)
     total_new_qty = existing_qty + float(wip_qty)
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
-    payload = {
-        "assembly_pn": str(assembly_pn),
-        "wip_qty": float(total_new_qty),
-        "updated_at": now_str
-    }
+    payload = {"assembly_pn": str(assembly_pn), "wip_qty": float(total_new_qty), "updated_at": now_str}
     try:
         supabase.table("mrp_wip_assemblies").upsert(payload, on_conflict="assembly_pn").execute()
         fetch_wip_records.clear()
@@ -295,16 +283,7 @@ def delete_wip_record(assembly_pn):
 
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
-    payload = {
-        "pn": str(pn),
-        "added_stock": float(added_stock),
-        "eta": str(eta),
-        "status": str(status),
-        "supplier": str(supplier),
-        "comment": str(comment),
-        "updated_by": str(updated_by),
-        "updated_at": now_str
-    }
+    payload = {"pn": str(pn), "added_stock": float(added_stock), "eta": str(eta), "status": str(status), "supplier": str(supplier), "comment": str(comment), "updated_by": str(updated_by), "updated_at": now_str}
     try:
         supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
         supabase.table("mrp_inventory_history").insert(payload).execute()
@@ -314,10 +293,8 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
 
     if webhook_url:
         msg = "🔔 עדכון מלאי/ETA למוצר!\nמק'ט: " + str(pn) + "\nתוספת מלאי: " + str(added_stock) + "\nסטטוס: " + str(status) + "\nETA: " + str(eta)
-        try:
-            requests.post(webhook_url, data=json.dumps({"text": msg}), headers={'Content-Type': 'application/json'})
-        except:
-            pass
+        try: requests.post(webhook_url, data=json.dumps({"text": msg}), headers={'Content-Type': 'application/json'})
+        except: pass
 
 def delete_inventory_record(pn):
     try:
@@ -411,7 +388,6 @@ def get_base_mrp_eta_and_qty(pn):
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
-
         for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
@@ -427,8 +403,7 @@ def get_base_mrp_eta_and_qty(pn):
                             if pd.notnull(dt) and dt.year >= 2024:
                                 corrected_dt = dt - pd.DateOffset(months=1)
                                 return corrected_dt.strftime("%Y-%m"), q
-            except:
-                pass
+            except: pass
     return "בדיקה נדרשת", 0.0
 
 def get_base_mrp_eta(pn):
@@ -470,8 +445,7 @@ for m in MONTH_COLS:
             m_ym = dt.strftime("%Y-%m")
             if m_ym >= current_ym_str:
                 month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
-        except:
-            pass
+        except: pass
 
 if not month_options:
     for m in MONTH_COLS:
@@ -485,10 +459,8 @@ if not month_options:
 selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()), key="selected_month_label")
 selected_month_col = month_options[selected_month_label]
 
-try:
-    selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
-except:
-    selected_ym = str(selected_month_col)[:7]
+try: selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
+except: selected_ym = str(selected_month_col)[:7]
 
 num_months_ahead = st.sidebar.slider("📅 מבט קדימה (חודשים)", min_value=1, max_value=6, value=1, key="num_months_ahead")
 
@@ -509,16 +481,9 @@ for col in valid_assemblies:
         filtered_assembly_cols.append(col)
         assembly_mapping[col] = col
 
-selected_assembly = st.sidebar.selectbox(
-    "בחר הרכבה",
-    ["הכל"] + filtered_assembly_cols,
-    format_func=lambda x: assembly_mapping.get(x, x),
-    key="selected_assembly"
-)
-
+selected_assembly = st.sidebar.selectbox("בחר הרכבה", ["הכל"] + filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x), key="selected_assembly")
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types, key="selected_item_type")
-
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר מק'ט/תיאור", item_choices, key="selected_search_item")
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
@@ -578,8 +543,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
         if pd.notnull(m_c):
             try:
                 m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
-                if m_dt_ym in target_yms:
-                    target_month_cols_map[m_dt_ym] = m_c
+                if m_dt_ym in target_yms: target_month_cols_map[m_dt_ym] = m_c
             except: pass
 
     temp_df = df.copy()
@@ -765,7 +729,6 @@ with tab1:
     active_wip_list = [(w, q) for w, q in wip_cache_dash.items() if q > 0]
     total_wip_active_count = len(active_wip_list)
 
-    # 1. NEW: Auto-Insights Text for Executives
     worst_supplier = dash_df.groupby("Supplier")["Total_MRP_Shortage"].sum().idxmax() if not dash_df.empty else "אין חוסרים"
     insights_html = f"""
     <div class="insights-box">
@@ -777,16 +740,11 @@ with tab1:
 
     # Main KPIs
     col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
-    with col_k1:
-        kpi_card("🟢 מוכנות ייצור משוקללת", f"{readiness_pct:.1f}%", f"{total_executable_qty:,.0f} / {total_planned_qty:,.0f} יח'", "green", "📈")
-    with col_k2:
-        kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בטווח הנבחר", "red", "🛑")
-    with col_k3:
-        kpi_card("🏭 פעילים ב-WIP", total_wip_active_count, "הודעות ייצור פעילות", "blue", "⚙️")
-    with col_k4:
-        kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange", "🔎")
-    with col_k5:
-        kpi_card("📊 גירעון כמותי", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "סך כל היחידות", "purple", "📉")
+    with col_k1: kpi_card("🟢 מוכנות ייצור", f"{readiness_pct:.1f}%", f"{total_executable_qty:,.0f} / {total_planned_qty:,.0f} יח'", "green", "📈")
+    with col_k2: kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בטווח הנבחר", "red", "🛑")
+    with col_k3: kpi_card("🏭 פעילים ב-WIP", total_wip_active_count, "הודעות ייצור פעילות", "blue", "⚙️")
+    with col_k4: kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange", "🔎")
+    with col_k5: kpi_card("📊 גירעון כמותי", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "סך כל היחידות", "purple", "📉")
 
     st.divider()
 
@@ -818,7 +776,7 @@ with tab1:
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
             
-        # ROW 2 OF CHARTS: Treemap (Hierarchical bottlenecks) and Top 10 Bar Chart
+        # ROW 2 OF CHARTS: Treemap and Top 10
         st.divider()
         col_c1, col_c2 = st.columns([1.5, 1])
         
@@ -845,6 +803,31 @@ with tab1:
             fig_bar_top.update_layout(template=PLOTLY_TEMPLATE, height=350, margin=dict(t=10, b=10, l=10, r=10), yaxis={'categoryorder':'total ascending'})
             fig_bar_top.update_traces(textposition='inside')
             st.plotly_chart(fig_bar_top, use_container_width=True)
+
+        # ROW 3 OF CHARTS: Sunburst & Bubble Scatter
+        st.divider()
+        col_n1, col_n2 = st.columns([1.2, 1.2])
+        
+        with col_n1:
+            st.markdown("##### 🌞 חקר עומק להרכבות (Sunburst Drill-down)")
+            fig_sun = px.sunburst(tree_df[tree_df["Total_MRP_Shortage"] > 0], 
+                                  path=["Assembly", "Item_Type", "PN"], 
+                                  values="Total_MRP_Shortage",
+                                  color="Total_MRP_Shortage", 
+                                  color_continuous_scale="Viridis")
+            fig_sun.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=10, b=10, l=10, r=10))
+            st.plotly_chart(fig_sun, use_container_width=True)
+            
+        with col_n2:
+            st.markdown("##### 🔴 מטריצת סיכון ספקים (פיזור לפי חומרת חוסר)")
+            sup_risk = dash_df.groupby('Supplier').agg(Total_Shortage=('Total_MRP_Shortage', 'sum'), Unique_Items=('PN', 'nunique')).reset_index()
+            fig_bubble = px.scatter(sup_risk, x='Unique_Items', y='Total_Shortage', 
+                                    size='Total_Shortage', color='Supplier', text='Supplier',
+                                    labels={'Unique_Items': "מספר פריטים ייחודיים בחוסר", 'Total_Shortage': "נפח חוסר כולל"},
+                                    size_max=50)
+            fig_bubble.update_traces(textposition='top center')
+            fig_bubble.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=10, b=10, l=10, r=10))
+            st.plotly_chart(fig_bubble, use_container_width=True)
 
         st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית מלאה</div>', unsafe_allow_html=True)
         display_df = dash_df[[
@@ -880,8 +863,35 @@ with tab1:
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # גיליון 1: כלל החוסרים
             display_df.to_excel(writer, index=False, sheet_name='Executive_Shortages')
-        st.download_button("📥 הורד דו'ח מנהלים מלא ל-Excel", data=output.getvalue(), file_name=f"MRP_Executive_Report_{selected_ym}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            
+            # גיליון 2: מצעד 10 החוסרים (Top 10)
+            top10_df_export = dash_df.nlargest(10, "Total_MRP_Shortage")[
+                ["PN", "Description", "Item_Type", "Supplier", "Total_MRP_Shortage"]
+            ].rename(columns={
+                "PN": "מק'ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", 
+                "Supplier": "ספק", "Total_MRP_Shortage": "סך חוסר"
+            })
+            top10_df_export.to_excel(writer, index=False, sheet_name='Top_10_Bottlenecks')
+            
+            # גיליון 3: מטריצת סיכון ספקים (Supplier Risk)
+            sup_risk_export = dash_df.groupby('Supplier').agg(
+                Total_Shortage=('Total_MRP_Shortage', 'sum'), 
+                Unique_Items=('PN', 'nunique')
+            ).reset_index().rename(columns={
+                "Supplier": "ספק", "Total_Shortage": "נפח חוסר כולל", "Unique_Items": "מספר מק'טים ייחודיים"
+            }).sort_values(by="נפח חוסר כולל", ascending=False)
+            sup_risk_export.to_excel(writer, index=False, sheet_name='Supplier_Risk_Matrix')
+            
+        processed_data = output.getvalue()
+        
+        st.download_button(
+            label="📥 הורד דו'ח מנהלים מלא ל-Excel (כולל סיכוני ספקים ומצעד חוסרים)", 
+            data=processed_data, 
+            file_name=f"MRP_Executive_Report_{selected_ym}.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
@@ -988,12 +998,33 @@ with tab2:
         
         st.dataframe(matrix_df, column_config=column_conf, use_container_width=True, height=420)
 
-        if chart_assembly_data:
-            chart_df = pd.DataFrame(chart_assembly_data)
-            chart_melted = chart_df.melt(id_vars=["הרכבה ותיאור", "חודש"], value_vars=["תכנית ייצור", "ניתן לייצור בפועל", "WIP"], var_name="מדד", value_name="כמות")
-            fig_bar_asm = px.bar(chart_melted, x="הרכבה ותיאור", y="כמות", color="מדד", barmode="group", color_discrete_sequence=[PRIMARY, SUCCESS, ACCENT])
-            fig_bar_asm.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=20, b=40, l=20, r=20), xaxis_tickangle=-25)
-            st.plotly_chart(fig_bar_asm, use_container_width=True)
+        # RADAR CHART FOR CTB READINESS
+        st.divider()
+        col_r1, col_r2 = st.columns([1, 1])
+        with col_r1:
+            st.markdown("##### 🕸️ מפת מכ"ם רמת מוכנות הרכבות (Radar Chart)")
+            radar_target_m = selected_target_yms[0]
+            radar_col_name = f"% מוכנות ({radar_target_m})"
+            if radar_col_name in matrix_df.columns:
+                radar_df = matrix_df.copy()
+                # Create a shorter label for the radar chart to look clean
+                radar_df['Short_Label'] = radar_df['קוד הרכבה'].astype(str) + " (" + radar_df['רמה בעץ'].astype(str) + ")"
+                fig_radar = px.line_polar(radar_df, r=radar_col_name, theta='Short_Label', line_close=True, 
+                                          markers=True, fill='toself', range_r=[0,100], 
+                                          color_discrete_sequence=[ACCENT])
+                fig_radar.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=30, b=30, l=30, r=30))
+                st.plotly_chart(fig_radar, use_container_width=True)
+            else:
+                st.info("אין נתוני מוכנות לחודש הנבחר להצגת תרשים רדאר.")
+
+        with col_r2:
+            if chart_assembly_data:
+                chart_df = pd.DataFrame(chart_assembly_data)
+                chart_melted = chart_df.melt(id_vars=["הרכבה ותיאור", "חודש"], value_vars=["תכנית ייצור", "ניתן לייצור בפועל", "WIP"], var_name="מדד", value_name="כמות")
+                st.markdown("##### 📈 השוואת תוכנית מול ביצוע ו-WIP")
+                fig_bar_asm = px.bar(chart_melted, x="הרכבה ותיאור", y="כמות", color="מדד", barmode="group", color_discrete_sequence=[PRIMARY, SUCCESS, WARNING])
+                fig_bar_asm.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=20, b=40, l=20, r=20), xaxis_tickangle=-25)
+                st.plotly_chart(fig_bar_asm, use_container_width=True)
     else:
         st.info("לא נמצאו הרכבות מתוכננות לייצור בטווח החודשים שנבחר.")
 
@@ -1015,6 +1046,20 @@ with tab3:
         with col_m3: 
             before_after_delta = (breakdown_df['Total_MRP_Shortage'].sum() if not breakdown_df.empty else 0) - (sim_df['Total_MRP_Shortage'].sum() if not sim_df.empty else 0)
             kpi_card("📉 צמצום גירעון", f"{before_after_delta:,.0f}", "יחידות שירדו", "blue", "🔻")
+            
+        # WHAT-IF COMPARISON CHART
+        st.divider()
+        st.markdown("##### ⚖️ גרף השוואה: חוסר כולל בהרכבות (לפני מול אחרי הסימולציה)")
+        if not breakdown_df.empty and not sim_df.empty:
+            before_agg = breakdown_df.groupby('Assembly')['Total_MRP_Shortage'].sum().reset_index().rename(columns={'Total_MRP_Shortage': 'לפני הסימולציה'})
+            after_agg = sim_df.groupby('Assembly')['Total_MRP_Shortage'].sum().reset_index().rename(columns={'Total_MRP_Shortage': 'אחרי הסימולציה'})
+            comp_df = pd.merge(before_agg, after_agg, on='Assembly', how='outer').fillna(0)
+            comp_df = comp_df[(comp_df['לפני הסימולציה'] > 0) | (comp_df['אחרי הסימולציה'] > 0)]
+            comp_melted = comp_df.melt(id_vars='Assembly', value_vars=['לפני הסימולציה', 'אחרי הסימולציה'], var_name='מצב', value_name='כמות חסרה')
+            
+            fig_comp = px.bar(comp_melted, x='Assembly', y='כמות חסרה', color='מצב', barmode='group', color_discrete_map={'לפני הסימולציה': DANGER, 'אחרי הסימולציה': SUCCESS})
+            fig_comp.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=20, b=40, l=20, r=20), xaxis_tickangle=-25)
+            st.plotly_chart(fig_comp, use_container_width=True)
 
 with tab4:
     st.markdown('<div class="section-title">📌 לוח מעקב סטטוסים לחוסרים (Kanban)</div>', unsafe_allow_html=True)
