@@ -1,10 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת המציגה את הכמות לצד תאריך ה-ETA מתוך עמודות CC עד CZ (והלאה) בקובץ המקורי:
-1. שליפה ודחיפה מדויקת של כמויות לפי תאריכי ETA רוחביים.
-2. איפוס מסננים מלא (Clear All).
-3. עמודת חודש ייצור בטבלת תוכנית מרובת חודשים.
-4. ניהול סגירת WIP ומעקב ענן.
+גרסה מעודכנת הכוללת איפוס ויזואלי מלא של כל מסנני הסיידבר לברירת המחדל בלחיצת Clear All.
 
 הרצה:
 streamlit run mrp_app.py
@@ -388,7 +384,6 @@ def get_base_mrp_eta_and_qty(pn):
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
 
-        # סריקת עמודות מ-50 ועד סוף הטבלה (כולל CC עד CZ ואילך) לאיתור תאריך ETA וכמות
         for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
@@ -423,7 +418,7 @@ def get_first_supply_eta(pn, inv_cache=None):
     return get_base_mrp_eta(pn)
 
 # ==========================================================
-# SIDEBAR FILTERS & WHAT-IF CONTROLS
+# SIDEBAR FILTERS & WHAT-IF CONTROLS (WITH CLEAR ALL RESET)
 # ==========================================================
 st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
 webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
@@ -431,9 +426,12 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 
 st.sidebar.header("🔍 מסננים מתקדמים")
 
+# Handle Clear All by resetting session state filter keys
 if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    keys_to_clear = ["selected_month_label", "num_months_ahead", "selected_level", "selected_assembly", "selected_item_type", "selected_search_item"]
+    for k in keys_to_clear:
+        if k in st.session_state:
+            del st.session_state[k]
     st.rerun()
 
 current_ym_str = datetime.now().strftime("%Y-%m")
@@ -457,7 +455,7 @@ if not month_options:
             except:
                 month_options[str(m)] = m
 
-selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
+selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()), key="selected_month_label")
 selected_month_col = month_options[selected_month_label]
 
 try:
@@ -465,10 +463,10 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1)
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
 
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
-selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
+selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
 
 assembly_mapping = {"הכל": "הכל"}
 filtered_assembly_cols = []
@@ -487,14 +485,15 @@ for col in valid_assemblies:
 selected_assembly = st.sidebar.selectbox(
     "בחר הרכבה ספציפית לדשבורד",
     ["הכל"] + filtered_assembly_cols,
-    format_func=lambda x: assembly_mapping.get(x, x)
+    format_func=lambda x: assembly_mapping.get(x, x),
+    key="selected_assembly"
 )
 
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
-selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types)
+selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types, key="selected_item_type")
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
-selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices)
+selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices, key="selected_search_item")
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
 # ==========================================================
