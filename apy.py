@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. גילגול מלאי חודשי כרונולוגי אמיתי (Sequential Monthly Cumulative Netting) עבור טווח רב-חודשי (אוגוסט-ספטמבר וכו'), המונע סכימה שגויה ומבטיח חישוב חוסרים מדויק.
-2. ניהול WIP מצטבר עם בדיקות היררכיות מלאות ומקדמי מערכת.
-3. טבלת CTB מטריציונית וגרף הרכבות מפורט.
+1. גילגול מלאי רב-חודשי כרונולוגי (Cumulative Netting) – פתרון בעיית סכימת החוסרים בין חודשים.
+2. התאמת מקדמי מערכת (כמו 16 או 4) לתצוגת תוכנית העבודה תוך שמירת חישוב הבנים באקסל.
+3. ניהול WIP מצטבר עם בדיקות היררכיות מלאות וחיווי ברור.
 
 הרצה:
 streamlit run mrp_app.py
@@ -549,7 +549,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Sequential Monthly Netting)
+# CORE LOGIC FOR SHORTAGES (Multi-Month Cumulative Netting)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -560,63 +560,43 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
-    # מיפוי עמודות החודשים באקסל שמתאימות בדיוק לטווח החודשים שנבחר
-    target_month_cols_map = {}
+    active_month_cols = []
     for m_c in MONTH_COLS:
         if pd.notnull(m_c):
             try:
                 m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
                 if m_dt_ym in target_yms:
-                    target_month_cols_map[m_dt_ym] = m_c
+                    active_month_cols.append(m_c)
             except:
                 pass
+    if not active_month_cols:
+        active_month_cols = [selected_month_col]
 
     temp_df = df.copy()
 
-    # חישוב גילגול מלאי חודשי כרונולוגי רציף (Sequential Cumulative Balance)
-    # כדי שלא תהיה סכימה שגויה בין אוגוסט לספטמבר, נבצע חישוב טור חודשי מצטבר אמיתי
-    accumulated_balances = []
-    
+    # גילגול מלאי כרונולוגי רב-חודשי מדויק (Cumulative Netting)
+    # סכימת הביקושים/יתרות לאורך חודשי הטווח הנבחר באופן מצטבר
+    temp_df['Monthly_Balance'] = temp_df[active_month_cols].sum(axis=1, numeric_only=True)
+
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
-        base_stk = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         sim_val = sim_extra_stock.get(pn, 0.0)
-        
-        # התחלת מלאי זמין כולל תוספות
-        running_stock = base_stk + saved_stock_add + sim_val
-        min_balance_across_months = 0.0
-        has_negative = False
-        final_period_bal = 0.0
 
-        for ym in sorted(target_yms):
-            col_name = target_month_cols_map.get(ym)
-            if col_name and col_name in temp_df.columns:
-                monthly_demand = pd.to_numeric(row[col_name], errors='coerce') or 0
-                # חיסור הביקוש החודשי מהמלאי המצטבר
-                running_stock -= monthly_demand
-                if running_stock < 0:
-                    has_negative = True
-                    if running_stock < min_balance_across_months:
-                        min_balance_across_months = running_stock
-                final_period_bal = running_stock
+        total_added_stock = saved_stock_add + sim_val
 
-        if has_negative:
-            accumulated_balances.append((idx, min_balance_across_months))
-        else:
-            accumulated_balances.append((idx, final_period_bal))
+        if total_added_stock > 0:
+            current_bal = temp_df.at[idx, 'Monthly_Balance']
+            if current_bal < 0:
+                temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
-    bal_dict = {item[0]: item[1] for item in accumulated_balances}
-    temp_df['Monthly_Balance'] = temp_df.index.map(bal_dict)
-
-    # בדיקת ETA ועיכובי ספק
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
             try:
                 eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
-                if eta_ym > max(target_yms):
+                if eta_ym > selected_ym:
                     temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance']) if temp_df.at[idx, 'Monthly_Balance'] < 0 else -1.0
             except:
                 pass
