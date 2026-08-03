@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. עדכון לוגיקת ה-WIP: הוספת כמות להרכבה קיימת ב-WIP במקום דריסה, עם הודעות חיווי ברורות (הצלחה כאשר אין חוסרים, או פירוט חוסרים מנומק כאשר יש מניעה).
-2. טבלת CTB מטריציונית עם עמודות כמויות בהתחלה ועמודות סטטוס וחוסרים בסוף.
-3. גרף הרכבות מפורט המציג את תוכנית הייצור מול יכולת ביצוע בפועל ו-WIP לפי קוד ותיאור הרכבה.
+1. חישוב מדויק של כמות ניתנת לייצור בפועל המפחיתה את ה-WIP הקיים ($Y - Z$).
+2. ניהול WIP מצטבר (הוספה על קיים ללא דריסה) עם אינדיקציות והתראות חוסרים היררכיות.
+3. טבלת CTB מטריציונית וגרף הרכבות מפורט (קוד + תתיאור הרכבה בציר X).
 4. קישורים ישירים לחיפוש מלאי וניהול ענן מלא.
 
 הרצה:
@@ -254,7 +254,6 @@ def fetch_wip_records():
     return {}
 
 def save_wip_record(assembly_pn, wip_qty):
-    # מצטבר: אם ההרכבה כבר קיימת ב-WIP, נוסיף את הכמות החדשה למועדפת הקיימת
     current_wip_dict = fetch_wip_records()
     existing_qty = current_wip_dict.get(str(assembly_pn), 0.0)
     total_new_qty = existing_qty + float(wip_qty)
@@ -803,7 +802,7 @@ with tab1:
 
 with tab2:
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם השוואת כמויות וגרף הרכבות מפורט</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית, כמות ניתנת לייצור בפועל לפי חוסרים, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית, כמות ניתנת לייצור בפועל, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
@@ -826,7 +825,7 @@ with tab2:
 
         has_any_build = False
 
-        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית, ניתן לייצור בפועל, WIP) בהתחלה
+        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית, ניתן לייצור בפועל אחרי הפחתת WIP, WIP) בהתחלה
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
@@ -853,12 +852,15 @@ with tab2:
                             
                             possible_from_this = total_comp_stock / req_per
                             max_possible_build = min(max_possible_build, possible_from_this)
-                executable_qty = max(0.0, min(raw_build, max_possible_build))
+                gross_executable = max(0.0, min(raw_build, max_possible_build))
             else:
-                executable_qty = raw_build
+                gross_executable = raw_build
+
+            # הפחתת כמות ה-WIP הקיימת מהכמות שניתן לייצור (Y - Z)
+            net_executable_qty = max(0.0, gross_executable - current_wip_qty)
 
             row_data[f"תכנית ייצור ({target_m})"] = raw_build
-            row_data[f"ניתן לייצור ({target_m})"] = executable_qty
+            row_data[f"ניתן לייצור ({target_m})"] = net_executable_qty
             row_data[f"WIP ({target_m})"] = current_wip_qty
 
             if raw_build > 0 or current_wip_qty > 0:
@@ -866,7 +868,7 @@ with tab2:
                     "הרכבה ותיאור": f"{asm_col} - {asm_desc}",
                     "חודש": target_m,
                     "תכנית ייצור": raw_build,
-                    "ניתן לייצור בפועל": executable_qty,
+                    "ניתן לייצור בפועל": net_executable_qty,
                     "WIP": current_wip_qty
                 })
 
@@ -1126,14 +1128,12 @@ with tab5:
             recursive_issues_list = get_recursive_tree_issues(wip_asm_choice)
 
             if recursive_issues_list:
-                # אינדיקציה ברורה שלא ניתן להוריד את ההרכבה עקב חוסרים או עיכובים
                 st.error(f"❌ לא ניתן להוריד את ההרכבה `{wip_asm_choice}` לייצור (WIP) מפני שנמצאו חוסרים או עיכובים בשרשרת הבנים שלה!")
                 st.markdown("**פירוט החוסרים והעיכובים שמנעו את הורדת ההרכבה:**")
                 for item in recursive_issues_list:
                     st.markdown(f"- מק'ט: `{item['PN']}` | תיאור: {item['Description']} | סיבה: {item['Reason']}")
                 st.warning("💡 יש לעדכן את המלאי או ה-ETA של הרכיבים הללו בלשונית 'עדכון מלאי וספקים' לפני שניתן יהיה להכניסם ל-WIP.")
             else:
-                # אינדיקציה חיובית שההרכבה נוספה בהצלחה כי לא נמצאו חוסרים
                 save_wip_record(wip_asm_choice, wip_qty_input)
                 updated_total_wip = fetch_wip_records().get(wip_asm_choice, 0.0)
                 st.success(f"✅ בדיקת החוסרים עברה בהצלחה! לא נמצאו חוסרים או עיכובים בשרשרת ההרכבה `{wip_asm_choice}`.")
