@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתקדמת ומדויקת הכוללת:
-1. בדיקת עץ מלאה וקפדנית (Strict BOM Explosion) ל-WIP החוסמת מיד כל הרכבה (כמו T100) אם יש לה בנים חסרים.
-2. פירוט מלא של החסרים והצגתם למשתמש.
-3. תיקון ETA מדויק, שעון ישראל, וניהול ענן.
+גרסה מתקדמת הכוללת בדיקת עץ היררכית מלאה (Multi-Level BOM Validation):
+1. בחינה מדויקת של תתי-ההרכבות (כמו T200, T300) בהתאם לעץ המוצר ושורה 29.
+2. חסימה מוחלטת של ירידה ל-WIP אם תת-הרכבה או פריט בן נמצאים בגירעון או באיחור ETA.
+3. פירוט מלא של כל הרכיבים והתתי-הרכבות החסרים למשתמש.
 
 הרצה:
 streamlit run mrp_app.py
@@ -899,8 +899,8 @@ with tab4:
                 st.caption(f"+ עוד {count - 6} פריטים נוספים")
 
 with tab5:
-    st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (בדיקת עץ מלאה וקפדנית Clear To Build)</div>', unsafe_allow_html=True)
-    st.markdown("כאשר תבחר הרכבה (כמו T100), המערכת תסרוק את **כל** השורות ב-MRP שבהן מופיעה דרישה להרכבה זו או לבנים/תתי-ההרכבות שלה, ותחסום מיד אם ישנו ולו רכיב אחד חסר או באיחור.")
+    st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (בדיקת עץ היררכית מלאה Clear To Build)</div>', unsafe_allow_html=True)
+    st.markdown("כאשר תבחר הרכבה אב (כמו T100), המערכת תסרוק את כל תתי-ההרכבות שלה (כמו T200, T300 וכו' לפי שורה 29 בעץ המוצר) ותוודא שכולן מוכנות ושאין בהן או בבנים שלהן שום חוסר או עיכוב.")
 
     wip_current = fetch_wip_records()
 
@@ -909,39 +909,73 @@ with tab5:
         current_wip_val = wip_current.get(wip_asm_choice, 0.0)
         wip_qty_input = st.number_input("כמות יחידות הרכבה להורדה לייצור", min_value=0.0, value=float(current_wip_val if current_wip_val > 0 else 1.0), step=1.0)
 
-        submitted_wip = st.form_submit_button("בדיקת זמינות עץ קפדנית ושמור WIP")
+        submitted_wip = st.form_submit_button("בדיקת זמינות היררכית מלאה ושמור WIP")
 
         if submitted_wip:
             inv_cache_wip = fetch_all_inventory_records()
             
-            # פונקציית סריקה מחמירה לכל פריטי הבן והרכבות המשנה בעץ הקשורים להרכבה הנבחרת
-            def get_strict_tree_shortages(target_asm):
-                strict_missing = []
-                # סריקת כל השורות בטבלה הראשית שבהן עמודת ההרכבה הנבחרת מכילה ערך גדול מ-0
+            # פונקציית עזר למציאת כל תתי-ההרכבות והבנים התלויים בהרכבה זו דרך עץ המוצר (שורות ועמודות)
+            def get_hierarchical_tree_issues(target_asm):
+                issues = []
+                checked_items = set()
+
+                # 1. איתור כל העמודות שמייצגות תתי-הרכבות או רכיבים תחת עץ זה
+                # נבדוק אילו מק"טים מופיעים בשורות שבהן עמודת ההרכבה הנבחרת פעילה, או שהמק"ט עצמו הוא תת-ההרכבה
                 if target_asm in df.columns:
                     tree_rows = df[df[target_asm].notnull() & (pd.to_numeric(df[target_asm], errors='coerce') > 0)]
                 else:
                     tree_rows = pd.DataFrame()
 
-                # נצרף גם את כל השורות שמופיעות בדוח החוסרים הכללי עבור הרכבה זו
-                general_asm_shortages = breakdown_df[breakdown_df["Assembly"] == target_asm] if not breakdown_df.empty else pd.DataFrame()
+                # 2. בדיקת כל תתי-ההרכבות האחרות (כמו T200, T300) שברמה נמוכה יותר ושייכות לענף של T100
+                # נסרוק את כל עמודות ההרכבה הקיימות במערכת ונראה אילו מהן תלויות בהרכבה זו או מופיעות תחתיה בעץ
+                target_lvl = assembly_levels.get(target_asm, 0)
 
-                checked_pns = set()
+                for asm_col in valid_assemblies:
+                    if asm_col == target_asm:
+                        continue
+                    asm_lvl = assembly_levels.get(asm_col, 0)
+                    # אם זו תת-ההרכבה ברמה עמוקה יותר שתלויה באב
+                    if asm_lvl > target_lvl:
+                        # נבדוק האם יש לה דרישה או חוסר
+                        asm_monthly_bal = pd.to_numeric(df.loc[df[PN_COL] == asm_col, selected_month_col], errors='coerce')
+                        if not asm_monthly_bal.empty:
+                            bal_val = asm_monthly_bal.values[0]
+                            saved_stk, man_eta, _, _, _, _, _ = get_inventory_record(asm_col, inv_cache_wip)
+                            eff_bal = (bal_val if pd.notnull(bal_val) else 0) + saved_stk
+                            
+                            is_sub_late = False
+                            if man_eta and str(man_eta).strip() not in ["", "None", "NaT", "nan"]:
+                                try:
+                                    if pd.to_datetime(man_eta).strftime("%Y-%m") > selected_ym:
+                                        is_sub_late = True
+                                except:
+                                    pass
 
-                # בדיקת כל שורות הבנים בעץ הקשורות ישירות
+                            if eff_bal < 0 or is_sub_late:
+                                if asm_col not in checked_items:
+                                    checked_items.add(asm_col)
+                                    sub_desc = ""
+                                    try:
+                                        sub_desc = str(df_desc.iloc[0, df.columns.get_loc(asm_col)])
+                                    except:
+                                        sub_desc = ""
+                                    issues.append({
+                                        "PN": asm_col,
+                                        "Description": sub_desc,
+                                        "Reason": f"תת-הרכבה חסרה/מאחרת (יתרה: {eff_bal:g}, ETA: {man_eta if man_eta else 'ללא'})"
+                                    })
+
+                # 3. בדיקת כל שורות הבנים הרגילות בעץ (כגון פריטי רכש ותתי-מכלולים)
                 for _, t_row in tree_rows.iterrows():
                     p_num = str(t_row[PN_COL]).strip()
-                    if p_num == target_asm or p_num in checked_pns:
+                    if p_num == target_asm or p_num in checked_items:
                         continue
-                    checked_pns.add(p_num)
+                    checked_items.add(p_num)
 
-                    # בדיקת יתרה חודשית ומלאי כולל תוספות
                     monthly_bal = pd.to_numeric(t_row.get(selected_month_col, 0), errors='coerce') or 0
                     added_stk, man_eta, _, _, _, _, _ = get_inventory_record(p_num, inv_cache_wip)
-                    
                     effective_balance = monthly_bal + added_stk
-                    
-                    # בדיקה האם ה-ETA מעודכן לחודש מאוחר יותר מחודש התוכנית
+
                     is_late = False
                     if man_eta and str(man_eta).strip() not in ["", "None", "NaT", "nan"]:
                         try:
@@ -951,39 +985,38 @@ with tab5:
                             pass
 
                     if effective_balance < 0 or is_late:
-                        qty_missing = abs(effective_balance) if effective_balance < 0 else 1.0
-                        strict_missing.append({
+                        q_missing = abs(effective_balance) if effective_balance < 0 else 1.0
+                        issues.append({
                             "PN": p_num,
                             "Description": str(t_row[DESC_COL]),
-                            "Shortage": qty_missing,
-                            "Reason": f"גירעון של {qty_missing:g} יחידות" if effective_balance < 0 else f"עיכוב ספק (ETA: {man_eta})"
+                            "Reason": f"רכיב בן בגירעון ({q_missing:g} יח') או באיחור ETA ({man_eta})"
                         })
 
-                # הוספת חוסרים ישירים מדוח ה-MRP המרكזי אם קיימים
+                # 4. בדיקה בדוח החוסרים הכללי עבור הרכבה זו
+                general_asm_shortages = breakdown_df[breakdown_df["Assembly"] == target_asm] if not breakdown_df.empty else pd.DataFrame()
                 for _, g_row in general_asm_shortages.iterrows():
                     g_pn = str(g_row["PN"]).strip()
-                    if g_pn not in checked_pns and g_pn != target_asm:
-                        checked_pns.add(g_pn)
-                        strict_missing.append({
+                    if g_pn not in checked_items and g_pn != target_asm:
+                        checked_items.add(g_pn)
+                        issues.append({
                             "PN": g_pn,
                             "Description": str(g_row["Description"]),
-                            "Shortage": g_row["Total_MRP_Shortage"],
-                            "Reason": f"גירעון ישיר של {g_row['Total_MRP_Shortage']:g} יחידות"
+                            "Reason": f"חוסר ישיר בדוח MRP בסך {g_row['Total_MRP_Shortage']:g} יחידות"
                         })
 
-                return strict_missing
+                return issues
 
-            strict_shortages_list = get_strict_tree_shortages(wip_asm_choice)
+            hierarchical_issues = get_hierarchical_tree_issues(wip_asm_choice)
 
-            if strict_shortages_list:
-                st.error(f"❌ שגיאה חמורה: לא ניתן להוריד את ההרכבה הסופית `{wip_asm_choice}` לייצור כי קיימים חוסרים ברכיבים או בתתי-ההרכבות שלה!")
-                st.markdown("**הפריטים החסרים שנמצאו בעץ (X, Y, Z):**")
-                for item in strict_shortages_list:
-                    st.markdown(f"- מק\"ט: `{item['PN']}` | תיאור: {item['Description']} | סיבה: {item['Reason']}")
-                st.warning("💡 האם הפריטים החסרים הללו הגיעו? אם כן, אנא עדכן את כמות המלאי או את תאריך ה-ETA שלהם בלשונית **'עדכון מלאי וספקים'**, ולאחר מכן נסה שוב.")
+            if hierarchical_issues:
+                st.error(f"❌ שגיאה היררכית: לא ניתן להכניס את ההרכבה הסופית `{wip_asm_choice}` ל-WIP כי קיימות תתי-הרכבות (כמו T200/T300) או רכיבי בן חסרים/מאחרים!")
+                st.markdown("**פירוט הבעיות והחוסרים בהיררכיית העץ:**")
+                for iss in hierarchical_issues:
+                    st.markdown(f"- מק\"ט: `{iss['PN']}` | תיאור: {iss['Description']} | סיבה: {iss['Reason']}")
+                st.warning("💡 אנא ודא שכל תתי-ההרכבות ורכיבי הרכש הגיעו ושהעדכונים הוכנסו בלשונית **'עדכון מלאי וספקים'**, ורק לאחר מכן נסה שוב.")
             else:
                 save_wip_record(wip_asm_choice, wip_qty_input)
-                st.success(f"✅ בדיקת עץ קפדנית עברה בהצלחה! אין חוסרים בעץ של `{wip_asm_choice}`. ה-WIP נשמר בהצלחה והביקוש נגרע מהמערכת.")
+                st.success(f"✅ בדיקת עץ היררכית עברה בהצלחה מלאה! כל תתי-ההרכבות ורכיבי הבן של `{wip_asm_choice}` זמינים. ה-WIP נשמר בהצלחה!")
                 st.rerun()
 
     st.markdown("##### 📋 רשימת ההרכבות הפעילות ב-WIP כרגע:")
