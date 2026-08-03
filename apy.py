@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל טבלאות הניהול וה-ETA.
-2. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
-3. ניהול סגירת WIP והמרתו למלאי.
-4. סימולציות What-If, קובץ ספק חיצוני ותוכנית מרובת חודשים.
+1. טבלת CTB רוחבית מטריציונית (החודשים הופכים לעמודות ותמיכה ב-WIP לפי חודש).
+2. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל הטבלאות.
+3. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
+4. ניהול סגירת WIP והמרתו למלאי, סימולציות What-If ותוכנית מרובת חודשים.
 
 הרצה:
 streamlit run mrp_app.py
@@ -745,7 +745,7 @@ with tab1:
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
 
-        st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא וקישורי חיפוש מלאي</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא וקישורי חיפוש מלאי</div>', unsafe_allow_html=True)
         display_df = dash_df[[
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc",
             "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage",
@@ -797,84 +797,87 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לטווח חודשים</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית (החודשים כעמודות)</div>', unsafe_allow_html=True)
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה, כאשר כל חודש בטווח הנבחר מהווה עמודה בפני עצמה וכולל את כמות התוכנית נטו (לאחר הפחתת WIP חודשי) ואת הרכיבים הקריטיים החסרים לאותו חודש.")
+
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
-    production_capacity_rows = []
+    matrix_rows = []
 
-    for target_m in selected_target_yms:
-        sub_plan_df = assembly_plan_df[assembly_plan_df["YearMonth"] == target_m]
-        assemblies_to_check = [asm for asm in valid_assemblies if (sub_plan_df[sub_plan_df["Assembly_PN"] == asm]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0 or wip_cache_ctb.get(asm, 0) > 0]
+    # נסיץ על כל ההרכבות הרלוונטיות
+    assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
-        for asm_col in assemblies_to_check:
-            if selected_assembly != "הכל" and asm_col != selected_assembly:
-                continue
+    for asm_col in assemblies_to_check:
+        try:
+            asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
+        except:
+            asm_desc = ""
 
-            try:
-                asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
-            except:
-                asm_desc = ""
+        row_data = {
+            "קוד הרכבה": asm_col,
+            "תיאור הרכבה": asm_desc,
+            "רמה בעץ": assembly_levels.get(asm_col, 0)
+        }
 
-            raw_build = sub_plan_df[sub_plan_df["Assembly_PN"] == asm_col]["Build_Qty"].sum()
+        has_any_build = False
+        all_months_ok = True
+
+        for target_m in selected_target_yms:
+            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
+            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
             current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
-            planned_build = max(0.0, raw_build - current_wip_qty)
+            net_build = max(0.0, raw_build - current_wip_qty)
 
-            asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
+            if raw_build > 0 or current_wip_qty > 0:
+                has_any_build = True
+
+            # בדיקת חוסרים להרכבה זו בחודש הספציפי
+            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
+            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
 
             missing_items_details = []
             for _, s_row in asm_shortages.iterrows():
                 c_pn = str(s_row["PN"]).strip()
                 c_desc = str(s_row["Description"]).strip()
                 s_qty = s_row["Total_MRP_Shortage"]
-
                 eta_display_str = get_first_supply_eta(c_pn, inv_cache_ctb)
-
-                if eta_display_str and eta_display_str != "בדיקה נדרשת":
-                    try:
-                        eta_dt = pd.to_datetime(eta_display_str).date()
-                    except:
-                        eta_dt = date(2099, 12, 31)
-                else:
+                try:
+                    eta_dt = pd.to_datetime(eta_display_str).date() if eta_display_str != "בדיקה נדרשת" else date(2099, 12, 31)
+                except:
                     eta_dt = date(2099, 12, 31)
-
                 missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
 
             if missing_items_details:
+                all_months_ok = False
                 missing_items_details.sort(key=lambda x: x[3], reverse=True)
                 most_critical_pn = missing_items_details[0][0]
+
+                formatted_missing = []
+                for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
+                    eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
+                    item_text = f"{c_pn} ({c_desc[:10]}) - חסר: {m_qty:g}{eta_str}"
+                    if c_pn == most_critical_pn:
+                        formatted_missing.append(f"**{item_text}**")
+                    else:
+                        formatted_missing.append(item_text)
+                cell_text = f"❌ חסר ({net_build:g} יח' נטו | WIP: {current_wip_qty:g}): " + " | ".join(formatted_missing)
             else:
-                most_critical_pn = None
-
-            formatted_missing = []
-            for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-                eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
-                item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
-
-                if c_pn == most_critical_pn:
-                    formatted_missing.append(f"**{item_text}**")
+                if net_build > 0:
+                    cell_text = f"✅ מוכן לייצור ({net_build:g} יח' נטו | WIP: {current_wip_qty:g})"
                 else:
-                    formatted_missing.append(item_text)
+                    cell_text = f"💤 ללא תוכנית (WIP: {current_wip_qty:g})"
 
-            missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר את כל התוכנית."
-            max_buildable = 0 if formatted_missing else planned_build
+            row_data[f"חודש {target_m}"] = cell_text
 
-            production_capacity_rows.append({
-                "חודש ייצור": target_m,
-                "קוד הרכבה": asm_col,
-                "תיאור הרכבה": asm_desc,
-                "רמה בעץ": assembly_levels.get(asm_col, 0),
-                "כמות נוכחית ב-WIP": current_wip_qty,
-                "תוכנית ייצור נטו": planned_build,
-                "ניתן לייצר בפועל (CTB)": max_buildable,
-                "רכיבים חסרים בלבד (הקריטי ב-BOLD)": missing_str
-            })
+        if has_any_build:
+            matrix_rows.append(row_data)
 
-    if production_capacity_rows:
-        cap_df = pd.DataFrame(production_capacity_rows)
-        st.dataframe(cap_df, use_container_width=True, height=400)
+    if matrix_rows:
+        matrix_df = pd.DataFrame(matrix_rows)
+        st.dataframe(matrix_df, use_container_width=True, height=450)
     else:
-        st.info("לא נמצאו הרכבות מתוכננות לייצור בטווח הנבחר.")
+        st.info("לא נמצאו הרכבות מתוכננות לייצור בטווח החודשים שנבחר.")
 
 with tab3:
     st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
