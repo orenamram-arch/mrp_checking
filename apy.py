@@ -1,6 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת הכוללת איפוס ויזואלי מלא של כל מסנני הסיידבר לברירת המחדל בלחיצת Clear All.
+גרסה מלאה ומושלמת הכוללת:
+1. קישורים ישירים לחיפוש מלאי במאוזר ובדיגיקי (Mouser / DigiKey) לפי מק"ט.
+2. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
+3. ניהול סגירת WIP והמרתו למלאי.
+4. סימולציות What-If, קובץ ספק חיצוני ותוכנית מרובת חודשים.
 
 הרצה:
 streamlit run mrp_app.py
@@ -426,7 +430,6 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 
 st.sidebar.header("🔍 מסננים מתקדמים")
 
-# Handle Clear All by resetting session state filter keys
 if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
     keys_to_clear = ["selected_month_label", "num_months_ahead", "selected_level", "selected_assembly", "selected_item_type", "selected_search_item"]
     for k in keys_to_clear:
@@ -779,7 +782,7 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לטווח חודשים: {', '.join(selected_target_yms)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לטווח חודשים</div>', unsafe_allow_html=True)
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
@@ -1103,7 +1106,7 @@ with tab6:
                 st.rerun()
 
 with tab7:
-    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA, דחיות וכמויות (מתוך CC-CZ)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📅 מעקב ETA, דחיות, כמויות וקישורים למפיצים (Mouser / DigiKey)</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
 
@@ -1136,6 +1139,9 @@ with tab7:
         else:
             note = "ללא שינוי / לפי תכנון מקורי"
 
+        mouser_link = f"https://www.mouser.co.il/c/?q={p_num}"
+        digikey_link = f"https://www.digikey.com/en/products/result?keywords={p_num}"
+
         eta_table_rows.append({
             "מק'ט": p_num,
             "תיאור פריט": p_desc,
@@ -1143,9 +1149,11 @@ with tab7:
             "ETA מקורי (MRP)": orig_eta,
             "כמות מקורית (CC-CZ)": orig_qty,
             "ETA מעודכן (בפועל)": curr_eta_fmt,
-            "כמות מעודכנת (Added Stock)": current_added_stock,
+            "כמות מעודכנת": current_added_stock,
             "סטטוס ספק/דחייה": note,
             "ספק": saved_rec.get("supplier", "אופק"),
+            "חיפוש במאוזר": mouser_link,
+            "חיפוש בדיגיקי": digikey_link,
             "הערות משתמש": saved_rec.get("comment", "")
         })
 
@@ -1166,7 +1174,15 @@ with tab7:
                 filtered_eta_df["תיאור פריט"].str.contains(search_eta_pn, case=False, na=False)
             ]
 
-        st.dataframe(filtered_eta_df, use_container_width=True, height=450)
+        st.dataframe(
+            filtered_eta_df,
+            column_config={
+                "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
+                "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי")
+            },
+            use_container_width=True,
+            height=450
+        )
 
 with tab8:
     st.markdown('<div class="section-title">↩️ חזרה לאחור וניהול היסטוריה (UNDO)</div>', unsafe_allow_html=True)
