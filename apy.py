@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. מד מוכנות ייצור משוקלל המחושב לפי יכולת ייצור חלקי (Partial Readiness) מתוך טבלת ה-CTB.
-2. כרטיס KPI אינטראקטיבי בטאב 1 המאפשר להציג את רשימת כרטיסי ההרכבות הפעילים ב-WIP בלחיצה.
-3. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-4. תבניות Excel (Templates) להורדה ישירה ותמיכה בעדכון ETA וכמות.
+1. טאב חדש (טאב 9) לניהול ועריכה/גריעה של פריטים שקיבלו עדכוני מלאי.
+2. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
+3. כרטיס KPI אינטראקטיבי בטאב 1 להצגת כרטיסי WIP בלחיצה.
+4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
 
 הרצה:
 streamlit run mrp_app.py
@@ -750,7 +750,7 @@ breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 # ==========================================================
 # TABS DEFINITION
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
@@ -758,7 +758,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🏭 ניהול WIP (בייצור)",
     "📅 עדכון מלאי וספקים",
     "📅 מעקב ETA ודחיות",
-    "↩️ ניהול UNDO"
+    "↩️ ניהול UNDO",
+    "📦 ניהול מלאי מעודכן"
 ])
 
 with tab1:
@@ -778,7 +779,6 @@ with tab1:
     wip_cache_dash = fetch_wip_records()
     inv_cache_dash = fetch_all_inventory_records()
 
-    # חישוב אחוז מוכנות ייצור חלקי (Partial Readiness) מתוך תוכנית ה-CTB
     total_planned_qty = 0.0
     total_executable_qty = 0.0
     total_planned_assemblies_count = 0
@@ -1464,3 +1464,66 @@ with tab8:
                 st.divider()
     else:
         st.info("אין עדכונים קבועים במערכת כרגע.")
+
+with tab9:
+    st.markdown('<div class="section-title">📦 ניהול מלאי מעודכן (עריכה וגריעת כמויות)</div>', unsafe_allow_html=True)
+    st.markdown("כאן מוצגים כל הפריטים שקיבלו תוספת מלאי. באפשרותך לעדכן את הכמות מחדש או לגרוע/לאפס את המלאי המעודכן עבור כל פריט.")
+
+    inv_cache_mgmt = fetch_all_inventory_records()
+    active_stock_items = {k: v for k, v in inv_cache_mgmt.items() if float(v.get("added_stock", 0.0)) > 0}
+
+    if active_stock_items:
+        mgmt_rows = []
+        for p_code, p_dict in active_stock_items.items():
+            match_row = df[df[PN_COL].astype(str).str.strip() == p_code]
+            p_desc = str(match_row.iloc[0][DESC_COL]) if not match_row.empty else "לא ידוע"
+            mgmt_rows.append({
+                "מק'ט": p_code,
+                "תיאור פריט": p_desc,
+                "כמות מעודכנת": p_dict["added_stock"],
+                "ETA": p_dict["eta"],
+                "סטטוס": p_dict["status"],
+                "ספק": p_dict["supplier"],
+                "הערות": p_dict["comment"]
+            })
+
+        mgmt_df = pd.DataFrame(mgmt_rows)
+        st.dataframe(mgmt_df, use_container_width=True)
+
+        st.divider()
+        st.markdown("##### ✏️ עריכה פרטנית או גריעה למק'ט מעודכן:")
+        selected_mgmt_pn = st.selectbox("בחר מק'ט לעריכה או גריעה", list(active_stock_items.keys()), key="mgmt_pn_select")
+
+        if selected_mgmt_pn:
+            current_rec = active_stock_items[selected_mgmt_pn]
+            cur_qty = float(current_rec.get("added_stock", 0.0))
+            cur_eta = current_rec.get("eta", "")
+            cur_status = current_rec.get("status", "פתוח")
+            cur_sup = current_rec.get("supplier", "אופק")
+            cur_comm = current_rec.get("comment", "")
+
+            with st.form("edit_mgmt_form"):
+                new_qty_input = st.number_input("עדכן כמות מלאי חדשה", min_value=0.0, value=cur_qty, step=1.0)
+                
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    if st.form_submit_button("💾 שמור שינוי כמות"):
+                        save_inventory_record(
+                            pn=selected_mgmt_pn,
+                            added_stock=new_qty_input,
+                            eta=cur_eta,
+                            status=cur_status,
+                            supplier=cur_sup,
+                            comment=f"{cur_comm} | עודכן כמות ישירות מטאב 9 ל-{new_qty_input}",
+                            updated_by="Tab 9 Management",
+                            webhook_url=webhook_url
+                        )
+                        st.success(f"הכמות למק'ט `{selected_mgmt_pn}` עודכנה בהצלחה ל-{new_qty_input}!")
+                        st.rerun()
+                with col_e2:
+                    if st.form_submit_button("🗑️ גרוע / אפס מלאי לפריט זה"):
+                        delete_inventory_record(selected_mgmt_pn)
+                        st.success(f"העדכון למק'ט `{selected_mgmt_pn}` נמחק והמלאי אופס בהצלחה!")
+                        st.rerun()
+    else:
+        st.info("אין כרגע פריטים עם תוספת מלאי מעודכנת במערכת.")
