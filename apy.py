@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. טבלת CTB רוחבית מטריציונית (החודשים הופכים לעמודות ותמיכה ב-WIP לפי חודש).
+1. טבלת CTB מטריציונית עם הפרדת עמודות לתוכנית ייצור חודשית, WIP חודשי וחוסרים.
 2. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל הטבלאות.
 3. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
 4. ניהול סגירת WIP והמרתו למלאי, סימולציות What-If ותוכנית מרובת חודשים.
@@ -797,15 +797,13 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית (החודשים כעמודות)</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה, כאשר כל חודש בטווח הנבחר מהווה עמודה בפני עצמה וכולל את כמות התוכנית נטו (לאחר הפחתת WIP חודשי) ואת הרכיבים הקריטיים החסרים לאותו חודש.")
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם הפרדת עמודות תוכנית, WIP וחוסרים חודשיים</div>', unsafe_allow_html=True)
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה, כאשר עבור כל חודש בטווח הנבחר מוצגות עמודות ייעודיות נפרדות: **כמות התוכנית**, **כמות ה-WIP** ו**סטטוס החוסרים והרכיבים הקריטיים**.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
     matrix_rows = []
-
-    # נסיץ על כל ההרכבות הרלוונטיות
     assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
     for asm_col in assemblies_to_check:
@@ -821,7 +819,6 @@ with tab2:
         }
 
         has_any_build = False
-        all_months_ok = True
 
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
@@ -831,6 +828,10 @@ with tab2:
 
             if raw_build > 0 or current_wip_qty > 0:
                 has_any_build = True
+
+            # הכנסת נתונים לעמודות הנפרדות לחודש נתון
+            row_data[f"תכנית ייצור ({target_m})"] = raw_build
+            row_data[f"WIP ({target_m})"] = current_wip_qty
 
             # בדיקת חוסרים להרכבה זו בחודש הספציפי
             month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
@@ -849,7 +850,6 @@ with tab2:
                 missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
 
             if missing_items_details:
-                all_months_ok = False
                 missing_items_details.sort(key=lambda x: x[3], reverse=True)
                 most_critical_pn = missing_items_details[0][0]
 
@@ -861,14 +861,14 @@ with tab2:
                         formatted_missing.append(f"**{item_text}**")
                     else:
                         formatted_missing.append(item_text)
-                cell_text = f"❌ חסר ({net_build:g} יח' נטו | WIP: {current_wip_qty:g}): " + " | ".join(formatted_missing)
+                cell_text = f"❌ חסר: " + " | ".join(formatted_missing)
             else:
                 if net_build > 0:
-                    cell_text = f"✅ מוכן לייצור ({net_build:g} יח' נטו | WIP: {current_wip_qty:g})"
+                    cell_text = "✅ מוכן לייצור מלא"
                 else:
-                    cell_text = f"💤 ללא תוכנית (WIP: {current_wip_qty:g})"
+                    cell_text = "💤 ללא תוכנית ייצור"
 
-            row_data[f"חודש {target_m}"] = cell_text
+            row_data[f"סטטוס וחוסרים ({target_m})"] = cell_text
 
         if has_any_build:
             matrix_rows.append(row_data)
