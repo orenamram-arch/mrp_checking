@@ -1,9 +1,12 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מלאה הכוללת בדיקת עץ היררכית רקורסיבית מדויקת (Recursive BOM Explosion):
-1. סריקה היררכית מלאה של שרשרת הבנים והרמות (Level, ID, Next Ass).
-2. חסימת ירידה ל-WIP אם ולו רכיב אחד או תת-הרכבה בכל עומק העץ נמצא בגירעון או באיחור ETA.
-3. ניהול ענן מלא ותיקוני מחרוזות.
+גרסה מתקדמת ומלאה הכוללת:
+1. ניהול סגירת WIP אוטומטית בסוף חודש (המרת WIP למלאי זמין).
+2. הצגת WIP פעיל בדשבורד הראשי ובלשונית תוכנית הייצור.
+3. סינון חודשים מהחודש הנוכחי קדימה בלבד כברירת מחדל.
+4. ייבוא קובץ ETA / עדכון ספקים חיצוני (דריסה אוטומטית).
+5. כפתור Clear All למסננים בסיידבר.
+6. מבט תכנון מרובה חודשים לבחירה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -149,8 +152,6 @@ footer {{visibility: hidden;}}
     border-right: 3px solid {PRIMARY};
     font-size: 13px;
 }}
-
-.stMetric {{ border: 1px solid rgba(128,128,128,0.2); border-radius: 8px; padding: 10px; }}
 
 @media (max-width: 640px) {{
     .hero-banner {{ padding: 18px 16px; border-radius: 14px; }}
@@ -423,17 +424,38 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 
 st.sidebar.header("🔍 מסננים מתקדמים")
 
+# Clear All button handling
+if "clear_filters" not in st.session_state:
+    st.session_state.clear_filters = False
+
+if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
+    st.session_state.clear_filters = True
+    st.rerun()
+
+if st.session_state.clear_filters:
+    st.session_state.clear_filters = False
+
+# Filter future months by default (from current month onwards)
+current_ym_str = datetime.now().strftime("%Y-%m")
 month_options = {}
 for m in MONTH_COLS:
     if pd.notnull(m):
         try:
             dt = pd.to_datetime(m)
-            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            m_ym = dt.strftime("%Y-%m")
+            if m_ym >= current_ym_str:
+                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
         except:
-            month_options[str(m)] = m
+            pass
 
 if not month_options:
-    month_options["ברירת מחדל"] = df.columns[108] if len(df.columns) > 108 else df.columns[-1]
+    for m in MONTH_COLS:
+        if pd.notnull(m):
+            try:
+                dt = pd.to_datetime(m)
+                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            except:
+                month_options[str(m)] = m
 
 selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month_col = month_options[selected_month_label]
@@ -442,6 +464,9 @@ try:
     selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
 except:
     selected_ym = str(selected_month_col)[:7]
+
+# Multi-month view selection
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1)
 
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options)
@@ -473,19 +498,66 @@ item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices)
 search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
 
+# ==========================================================
+# EXTERNAL ETA FILE UPLOAD (SUPPLIER FILE)
+# ==========================================================
+st.sidebar.divider()
+st.sidebar.markdown("##### 📥 ייבוא קובץ ETA מעודכן מהספק")
+uploaded_eta_file = st.sidebar.file_uploader("העלה קובץ Excel (PN, ETA, Qty)", type=["xlsx", "xls"])
+if uploaded_eta_file is not None:
+    try:
+        sup_df = pd.read_excel(uploaded_eta_file)
+        if st.sidebar.button("⚡ עדכן אוטומטית לפי קובץ ספק"):
+            updated_count = 0
+            for _, s_row in sup_df.iterrows():
+                p_code = str(s_row.iloc[0]).strip()
+                new_eta = str(s_row.iloc[1]).strip()
+                new_qty = float(s_row.iloc[2]) if len(s_row) > 2 and pd.notnull(s_row.iloc[2]) else 0.0
+
+                if p_code and p_code != 'nan':
+                    curr_stock, _, curr_status, curr_sup, curr_comm, _, _ = get_inventory_record(p_code)
+                    save_inventory_record(
+                        pn=p_code,
+                        added_stock=curr_stock + new_qty if new_qty > 0 else curr_stock,
+                        eta=new_eta,
+                        status=curr_status if curr_status != "פתוח" else "הוזמן",
+                        supplier=curr_sup,
+                        comment=f"{curr_comm} | עודכן מקובץ ספק חיצוני",
+                        updated_by="Supplier File",
+                        webhook_url=webhook_url
+                    )
+                    updated_count += 1
+            st.sidebar.success(f"עודכנו בהצלחה {updated_count} פריטים מקובץ הספק!")
+    except Exception as e:
+        st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES
+# CORE LOGIC FOR SHORTAGES (Multi-Month support)
 # ==========================================================
-def calculate_mrp_breakdown(sim_extra_stock=None):
+def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
         sim_extra_stock = {}
+    if target_yms is None:
+        target_yms = [selected_ym]
 
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
+    # Find columns corresponding to target_yms
+    active_month_cols = []
+    for m_c in MONTH_COLS:
+        if pd.notnull(m_c):
+            try:
+                m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
+                if m_dt_ym in target_yms:
+                    active_month_cols.append(m_c)
+            except:
+                pass
+    if not active_month_cols:
+        active_month_cols = [selected_month_col]
+
     temp_df = df.copy()
-    temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
+    temp_df['Monthly_Balance'] = temp_df[active_month_cols].sum(axis=1, numeric_only=True)
 
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
@@ -513,8 +585,8 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
-    month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
-    plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
+    month_plan = assembly_plan_df[assembly_plan_df["YearMonth"].isin(target_yms)]
+    plan_dict = month_plan.groupby("Assembly_PN")["Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
@@ -568,7 +640,18 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
 
     return res_df
 
-breakdown_df = calculate_mrp_breakdown()
+# Calculate target months list based on slider
+all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
+start_idx = 0
+for idx, ym in enumerate(all_ym_list):
+    if ym >= selected_ym:
+        start_idx = idx
+        break
+selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead]
+if not selected_target_yms:
+    selected_target_yms = [selected_ym]
+
+breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
 # ==========================================================
 # TABS DEFINITION
@@ -589,7 +672,7 @@ with tab1:
     current_time_str = israel_time.strftime("%d/%m/%Y | %H:%M:%S")
     st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; opacity: 0.85; font-weight: 600;">
-        <div>🎯 תמונת מצב ניהולית לחודש: {selected_month_label}</div>
+        <div>🎯 תמונת מצב ניהולית לטווח חודשים: {', '.join(selected_target_yms)}</div>
         <div>🕒 שעון ישראל (עדכני): {current_time_str}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -599,22 +682,25 @@ with tab1:
         dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
 
     wip_cache_dash = fetch_wip_records()
-    total_planned_assemblies = len([a for a in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() - wip_cache_dash.get(a, 0)) > 0])
+    total_planned_assemblies = len([a for a in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() - wip_cache_dash.get(a, 0)) > 0])
     blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
     ready_assemblies = max(0, total_planned_assemblies - blocked_assemblies)
     readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
 
     unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
+    total_wip_active_count = len([w for w, q in wip_cache_dash.items() if q > 0])
 
-    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+    col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
     with col_k1:
         kpi_card("🟢 מוכנות קווי ייצור", f"{readiness_pct:.1f}%", f"{ready_assemblies}/{total_planned_assemblies} הרכבות מוכנות", "green")
     with col_k2:
-        kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בחודש הנבחר", "red")
+        kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בטווח הנבחר", "red")
     with col_k3:
-        kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange")
+        kpi_card("🏭 פעילים ב-WIP", total_wip_active_count, "הודעות ייצור פעילות", "blue")
     with col_k4:
-        kpi_card("📊 כמות גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
+        kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange")
+    with col_k5:
+        kpi_card("📊 גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
 
     st.divider()
 
@@ -653,61 +739,6 @@ with tab1:
                              color_discrete_sequence=COLOR_SEQ)
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
-
-        col_g3, col_g4 = st.columns(2)
-
-        with col_g3:
-            st.markdown("##### 🔝 Top 10 מק'טים עם החוסר הגדול ביותר")
-            top10 = (dash_df.drop_duplicates(subset=["PN"])
-                            .sort_values("Total_MRP_Shortage", ascending=False)
-                            .head(10))
-            fig_top = px.bar(top10, x="Total_MRP_Shortage", y="PN", orientation="h",
-                             color="Total_MRP_Shortage", color_continuous_scale=["#F59E0B", "#EF4444"],
-                             text="Total_MRP_Shortage", hover_data=["Description", "Supplier", "Status"])
-            fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_top.update_layout(template=PLOTLY_TEMPLATE, height=380, yaxis={'categoryorder': 'total ascending'},
-                                  margin=dict(t=10, b=10, l=10, r=10), coloraxis_showscale=False)
-            st.plotly_chart(fig_top, use_container_width=True)
-
-        with col_g4:
-            st.markdown("##### 📈 מגמת חוסרים רוחבית לאורך חודשי השנה")
-            inv_cache_trend = fetch_all_inventory_records()
-            trend_rows = []
-            for m_col in MONTH_COLS:
-                if pd.notnull(m_col):
-                    try:
-                        m_dt = pd.to_datetime(m_col)
-                        m_ym = m_dt.strftime("%Y-%m")
-                        temp_b = pd.to_numeric(df[m_col], errors='coerce').fillna(0)
-
-                        for idx_temp, row_temp in df.iterrows():
-                            pn_temp = str(row_temp[PN_COL]).strip()
-                            saved_stk, _, _, _, _, _, _ = get_inventory_record(pn_temp, inv_cache_trend)
-                            if saved_stk > 0:
-                                val_temp = temp_b.loc[idx_temp]
-                                if val_temp < 0:
-                                    temp_b.loc[idx_temp] = val_temp + saved_stk
-
-                        tot_sh = temp_b[temp_b < 0].abs().sum()
-                        trend_rows.append({"Month": m_ym, "Total_Shortage": tot_sh})
-                    except:
-                        pass
-            trend_df = pd.DataFrame(trend_rows)
-            if not trend_df.empty:
-                fig_line = px.area(trend_df, x="Month", y="Total_Shortage", markers=True,
-                                   color_discrete_sequence=[ACCENT])
-                fig_line.update_traces(line=dict(width=3))
-                fig_line.update_layout(template=PLOTLY_TEMPLATE, height=380, margin=dict(t=10, b=10, l=10, r=10))
-                st.plotly_chart(fig_line, use_container_width=True)
-
-        st.markdown("##### 🔻 פילוח סטטוס טיפול בפריטים חסרים")
-        status_counts = dash_df.drop_duplicates(subset=["PN"])["Status"].value_counts().reset_index()
-        status_counts.columns = ["Status", "Count"]
-        if not status_counts.empty:
-            fig_funnel = px.funnel(status_counts.sort_values("Count", ascending=False), x="Count", y="Status",
-                                   color_discrete_sequence=[PRIMARY])
-            fig_funnel.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
-            st.plotly_chart(fig_funnel, use_container_width=True)
 
         st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא</div>', unsafe_allow_html=True)
         display_df = dash_df[[
@@ -752,11 +783,11 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לטווח חודשים: {', '.join(selected_target_yms)}</div>', unsafe_allow_html=True)
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
-    assemblies_to_check = [asm for asm in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0]
+    assemblies_to_check = [asm for asm in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0 or wip_cache_ctb.get(asm, 0) > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
 
     production_capacity_rows = []
@@ -770,8 +801,9 @@ with tab2:
         except:
             asm_desc = ""
 
-        raw_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
-        planned_build = max(0.0, raw_build - wip_cache_ctb.get(asm_col, 0))
+        raw_build = assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
+        current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
+        planned_build = max(0.0, raw_build - current_wip_qty)
 
         asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
 
@@ -816,27 +848,17 @@ with tab2:
             "קוד הרכבה": asm_col,
             "תיאור הרכבה": asm_desc,
             "רמה בעץ": assembly_levels.get(asm_col, 0),
-            "תוכנית ייצור": planned_build,
+            "כמות נוכחית ב-WIP": current_wip_qty,
+            "תוכנית ייצור נטו": planned_build,
             "ניתן לייצר בפועל (CTB)": max_buildable,
             "רכיבים חסרים בלבד (הקריטי ב-BOLD)": missing_str
         })
 
     if production_capacity_rows:
         cap_df = pd.DataFrame(production_capacity_rows)
-        col_c1, col_c2 = st.columns([1, 1.4])
-        with col_c1:
-            st.markdown("##### 🚦 מוכנות הרכבות (CTB מול תוכנית)")
-            cap_df["גירעון"] = cap_df["תוכנית ייצור"] - cap_df["ניתן לייצר בפועל (CTB)"]
-            fig_ctb = px.bar(cap_df, x="קוד הרכבה", y=["ניתן לייצר בפועל (CTB)", "גירעון"],
-                             color_discrete_sequence=[SUCCESS, DANGER], barmode="stack")
-            fig_ctb.update_layout(template=PLOTLY_TEMPLATE, height=340, margin=dict(t=10, b=10, l=10, r=10),
-                                  legend_title_text="")
-            st.plotly_chart(fig_ctb, use_container_width=True)
-        with col_c2:
-            st.markdown("##### 📋 טבלת CTB מפורטת")
-            st.dataframe(cap_df.drop(columns=["גירעון"]), use_container_width=True, height=340)
+        st.dataframe(cap_df, use_container_width=True, height=400)
     else:
-        st.info(f"לא נמצאו הרכבות מתוכננות לייצור לחודש {selected_month_label}.")
+        st.info("לא נמצאו הרכבות מתוכננות לייצור בטווח הנבחר.")
 
 with tab3:
     st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
@@ -847,7 +869,7 @@ with tab3:
         sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי לצורך סימולציה", min_value=0.0, value=10.0, step=1.0)
 
     if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
-        sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock})
+        sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock}, target_yms=selected_target_yms)
         orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
         sim_blocked = set(sim_df['Assembly'].unique()) if not sim_df.empty else set()
         freed_assemblies = orig_blocked - sim_blocked
@@ -899,13 +921,45 @@ with tab4:
                 st.caption(f"+ עוד {count - 6} פריטים נוספים")
 
 with tab5:
-    st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (בדיקת עץ היררכית רקורסיבית מלאה - Full BOM Explosion)</div>', unsafe_allow_html=True)
-    st.markdown("בדיקה הנדסית קפדנית: מעבר מדויק על עץ המוצר הרב-רמות (Level, ID, Next Ass) לוודא שכל שרשרת הבנים והתתי-הרכבות זמינה.")
+    st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (כולל סגירת מחזור ייצור ואימות היררכיה)</div>', unsafe_allow_html=True)
+    st.markdown("כאן ניתן להוריד הרכבות לייצור לאחר בדיקת עץ קפדנית, או לדווח על סיום תהליך ייצור בסוף חודש (המרה אוטומטית למלאי זמין).")
 
     wip_current = fetch_wip_records()
 
+    # Section for closing active WIP at the end of the month
+    if wip_current:
+        st.markdown("##### 🏁 סגירת הרכבות שהיו ב-WIP (המרתן למלאי זמין)")
+        with st.form("close_wip_form"):
+            wip_to_close = st.selectbox("בחר הרכבה שסיימה ייצור לחודש זה", list(wip_current.keys()), format_func=lambda x: f"{x} (כמות ב-WIP: {wip_current[x]})")
+            is_finished = st.checkbox("האם ההרכבה הסתיימה לחלוטין והושלמה בהצלחה?")
+            
+            if st.form_submit_button("סגור WIP והוסף למלאי הזמין"):
+                if is_finished:
+                    closing_qty = wip_current[wip_to_close]
+                    curr_stk, curr_eta, curr_stat, curr_sup, curr_comm, _, _ = get_inventory_record(wip_to_close)
+                    
+                    # Save accumulated inventory to the assembly PN
+                    save_inventory_record(
+                        pn=wip_to_close,
+                        added_stock=curr_stk + closing_qty,
+                        eta=curr_eta,
+                        status="התקבל",
+                        supplier=curr_sup,
+                        comment=f"{curr_comm} | הושלם מייצור WIP בסך {closing_qty} יחידות",
+                        updated_by="WIP Close Module",
+                        webhook_url=webhook_url
+                    )
+                    # Remove from WIP table
+                    delete_wip_record(wip_to_close)
+                    st.success(f"ההרכבה `{wip_to_close}` טופלה בהצלחה! ה-WIP אופס והכמות ({closing_qty}) נוספה למלאי ההרכבה.")
+                    st.rerun()
+                else:
+                    st.warning("יש לסמן את תיבת הסימון המאשרת שההרכבה אכן הסתיימה.")
+
+    st.divider()
+
     with st.form("wip_form"):
-        wip_asm_choice = st.selectbox("בחר הרכבה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
+        wip_asm_choice = st.selectbox("בחר הרכבה חדשה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
         current_wip_val = wip_current.get(wip_asm_choice, 0.0)
         wip_qty_input = st.number_input("כמות יחידות הרכבה להורדה לייצור", min_value=0.0, value=float(current_wip_val if current_wip_val > 0 else 1.0), step=1.0)
 
