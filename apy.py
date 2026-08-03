@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. תיקון לוגיקת בדיקת היררכיה בטאב 5 (WIP) כך שתתבסס על לוגיקת ה-OR החודשית בטווח הנבחר ותזהה כל חוסר בשרשרת הבנים.
-2. תבניות Excel (Templates) להורדה ישירה מתוך הסיידבר.
-3. ייבוא ETA וכמות אספקה מתקדם מקובץ ספק.
+1. כרטיס KPI אינטראקטיבי בטאב 1 המאפשר לפתוח ולהציג את רשימת כרטיסי ההרכבות הפעילים ב-WIP בלחיצה.
+2. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
+3. תבניות Excel (Templates) להורדה ישירה ותמיכה בעדכון ETA וכמות.
 4. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
@@ -638,7 +638,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
 
     temp_df = df.copy()
 
-    # לוגיקת OR חודשית מול עמודות ה-MRP בטווח הנבחר:
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
@@ -783,7 +782,8 @@ with tab1:
     readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
 
     unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
-    total_wip_active_count = len([w for w, q in wip_cache_dash.items() if q > 0])
+    active_wip_list = [(w, q) for w, q in wip_cache_dash.items() if q > 0]
+    total_wip_active_count = len(active_wip_list)
 
     col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
     with col_k1:
@@ -796,6 +796,25 @@ with tab1:
         kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange")
     with col_k5:
         kpi_card("📊 גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
+
+    # פתיחת מסך / Expander אינטראקטיבי להצגת כרטיסי ה-WIP בלחיצה
+    with st.expander("🔍 הצג פירוט כרטיסי הרכבות פעילים ב-WIP (לחץ לפתיחה)", expanded=False):
+        if active_wip_list:
+            wip_detail_rows = []
+            for asm_pn, asm_qty in active_wip_list:
+                try:
+                    asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_pn)]
+                except:
+                    asm_desc = ""
+                wip_detail_rows.append({
+                    "קוד הרכבה": asm_pn,
+                    "תיאור הרכבה": asm_desc,
+                    "כמות ב-WIP": asm_qty,
+                    "רמה בעץ": assembly_levels.get(asm_pn, 0)
+                })
+            st.dataframe(pd.DataFrame(wip_detail_rows), use_container_width=True)
+        else:
+            st.info("אין כרגע הרכבות פעילות ב-WIP.")
 
     st.divider()
 
@@ -1175,14 +1194,12 @@ with tab5:
                     for _, d_row in direct_rows.iterrows():
                         all_child_pns.add(str(d_row[PN_COL]).strip())
 
-                # שליפת כל החוסרים בטווח הנבחר באמצעות פונקציית החוסרים המרכזית (לוגיקת OR חודשית)
                 current_shortages_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
                 for c_pn in all_child_pns:
                     if c_pn == target_asm:
                         continue
                     
-                    # בדיקה האם הרכיב מופיע ברשימת החוסרים לטווח הנבחר
                     shortage_match = current_shortages_df[current_shortages_df["PN"].astype(str).str.strip() == c_pn] if not current_shortages_df.empty else pd.DataFrame()
                     
                     if not shortage_match.empty:
@@ -1195,7 +1212,6 @@ with tab5:
                             "Reason": f"גירעון ב-MRP בסך של {q_missing:g} יח' בטווח הנבחר ({', '.join(selected_target_yms)})"
                         })
                     else:
-                        # בדיקת עיכוב ETA חריג מעבר לטווח הנבחר
                         match_row = df[df[PN_COL].astype(str).str.strip() == c_pn]
                         if not match_row.empty:
                             r_data = match_row.iloc[0]
