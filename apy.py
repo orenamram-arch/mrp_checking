@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. חישוב מדויק של צוואר הבקבוק ההיררכי לכמות שניתן לייצור בפועל בכל הרכבה.
-2. טבלת CTB מטריציונית שבה עמודות הכמויות מרוכזות בהתחלה ועמודות הסטטוס והחוסרים בסוף.
-3. גרף חודשי מרוכז המציג בציר ה-X את קוד ותיאור ההרכבה, מול עמודות תוכנית הייצור, הכמות הניתנת לייצור וה-WIP.
-4. קישורים ישירים לחיפוש מלאי וכל יכולות ניהול הענן.
+1. עדכון לוגיקת ה-WIP: הוספת כמות להרכבה קיימת ב-WIP במקום דריסה, עם הודעות חיווי ברורות (הצלחה כאשר אין חוסרים, או פירוט חוסרים מנומק כאשר יש מניעה).
+2. טבלת CTB מטריציונית עם עמודות כמויות בהתחלה ועמודות סטטוס וחוסרים בסוף.
+3. גרף הרכבות מפורט המציג את תוכנית הייצור מול יכולת ביצוע בפועל ו-WIP לפי קוד ותיאור הרכבה.
+4. קישורים ישירים לחיפוש מלאי וניהול ענן מלא.
 
 הרצה:
 streamlit run mrp_app.py
@@ -254,10 +254,15 @@ def fetch_wip_records():
     return {}
 
 def save_wip_record(assembly_pn, wip_qty):
+    # מצטבר: אם ההרכבה כבר קיימת ב-WIP, נוסיף את הכמות החדשה למועדפת הקיימת
+    current_wip_dict = fetch_wip_records()
+    existing_qty = current_wip_dict.get(str(assembly_pn), 0.0)
+    total_new_qty = existing_qty + float(wip_qty)
+
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     payload = {
         "assembly_pn": str(assembly_pn),
-        "wip_qty": float(wip_qty),
+        "wip_qty": float(total_new_qty),
         "updated_at": now_str
     }
     try:
@@ -857,7 +862,6 @@ with tab2:
             row_data[f"WIP ({target_m})"] = current_wip_qty
 
             if raw_build > 0 or current_wip_qty > 0:
-                # שמירת נתונים לגרף לפי הרכבה ותיאור ההרכבה
                 chart_assembly_data.append({
                     "הרכבה ותיאור": f"{asm_col} - {asm_desc}",
                     "חודש": target_m,
@@ -1007,7 +1011,7 @@ with tab4:
 
 with tab5:
     st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (כולל סגירת מחזור ייצור ואימות היררכיה)</div>', unsafe_allow_html=True)
-    st.markdown("כאן ניתן להוריד הרכבות לייצור לאחר בדיקת עץ קפדנית, או לדווח על סיום תהליך ייצור בסוף חודש (המרה אוטומטית למלאי זמין).")
+    st.markdown("כאן ניתן להוריד הרכבות לייצור לאחר בדיקת עץ קפדנית (מצטבר על קיים), או לדווח על סיום תהליך ייצור בסוף חודש.")
 
     wip_current = fetch_wip_records()
 
@@ -1043,7 +1047,11 @@ with tab5:
     with st.form("wip_form"):
         wip_asm_choice = st.selectbox("בחר הרכבה חדשה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
         current_wip_val = wip_current.get(wip_asm_choice, 0.0)
-        wip_qty_input = st.number_input("כמות יחידות הרכבה להורדה לייצור", min_value=0.0, value=float(current_wip_val if current_wip_val > 0 else 1.0), step=1.0)
+        
+        if current_wip_val > 0:
+            st.info(f"ℹ️ שים לב: הרכבה זו כבר קיימת ב-WIP בכמות של `{current_wip_val}`. הכמות שתזין להלן **תווסף** לכמות הקיימת ולא תדרוס אותה.")
+
+        wip_qty_input = st.number_input("כמות יחידות הרכבה להוספה לייצור (WIP)", min_value=0.0, value=1.0, step=1.0)
 
         submitted_wip = st.form_submit_button("בדיקת זמינות היררכית מלאה ושמור WIP")
 
@@ -1118,14 +1126,18 @@ with tab5:
             recursive_issues_list = get_recursive_tree_issues(wip_asm_choice)
 
             if recursive_issues_list:
-                st.error(f"❌ שגיאה היררכית קפדנית: לא ניתן להכניס את ההרכבה `{wip_asm_choice}` ל-WIP מכיוון שחלק מתתי-ההרכבות או רכיבי הבן בשרשרת העץ שלה חסרים או באיחור!")
-                st.markdown("**רכיבים ותתי-הרכבות חסרים בשרשרת העץ:**")
+                # אינדיקציה ברורה שלא ניתן להוריד את ההרכבה עקב חוסרים או עיכובים
+                st.error(f"❌ לא ניתן להוריד את ההרכבה `{wip_asm_choice}` לייצור (WIP) מפני שנמצאו חוסרים או עיכובים בשרשרת הבנים שלה!")
+                st.markdown("**פירוט החוסרים והעיכובים שמנעו את הורדת ההרכבה:**")
                 for item in recursive_issues_list:
                     st.markdown(f"- מק'ט: `{item['PN']}` | תיאור: {item['Description']} | סיבה: {item['Reason']}")
-                st.warning("💡 עדכן את המלאי או ה-ETA של הרכיבים הללו בלשונית 'עדכון מלאי וספקים', ורק לאחר מכן נסה שוב.")
+                st.warning("💡 יש לעדכן את המלאי או ה-ETA של הרכיבים הללו בלשונית 'עדכון מלאי וספקים' לפני שניתן יהיה להכניסם ל-WIP.")
             else:
+                # אינדיקציה חיובית שההרכבה נוספה בהצלחה כי לא נמצאו חוסרים
                 save_wip_record(wip_asm_choice, wip_qty_input)
-                st.success(f"✅ בדיקת העץ הרקורסיבית עברה בהצלחה! כל שרשרת הבנים ותתי-ההרכבות של `{wip_asm_choice}` זמינות. ה-WIP נשמר!")
+                updated_total_wip = fetch_wip_records().get(wip_asm_choice, 0.0)
+                st.success(f"✅ בדיקת החוסרים עברה בהצלחה! לא נמצאו חוסרים או עיכובים בשרשרת ההרכבה `{wip_asm_choice}`.")
+                st.success(f"🚀 ההרכבה נוספה בהצלחה ל-WIP! כמות שנוספה: {wip_qty_input:g} | סך הכמות החדשה ב-WIP כעת: **{updated_total_wip:g}** יחידות.")
                 st.rerun()
 
     st.markdown("##### 📋 רשימת ההרכבות הפעילות ב-WIP כרגע:")
