@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. התאמת חישוב הבנים של ההרכבות בהתחשב במקדם הקשר למערכת (חלוקה במקדם הקשר כדי להתאים בין תוכנית המערכות לבנים באקסל).
-2. ניהול WIP מצטבר עם בדיקות היררכיות מלאות וחיווי ברור.
-3. טבלת CTB מטריציונית וגרף השוואה מעודכן.
+1. גילגול מלאי רב-חודשי כרונולוגי (Cumulative Netting) – פתרון בעיית סכימת החוסרים בין חודשים.
+2. התאמת מקדמי מערכת (כמו 16 או 4) לתצוגת תוכנית העבודה תוך שמירת חישוב הבנים באקסל.
+3. ניהול WIP מצטבר עם בדיקות היררכיות מלאות וחיווי ברור.
 
 הרצה:
 streamlit run mrp_app.py
@@ -24,7 +24,6 @@ from supabase import create_client, Client
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 
-# מילון מקדמי הקשר למערכת עבור ההרכבות הספציפיות
 ASSEMBLY_SYSTEM_FACTORS = {
     "1096G860-002": 4,
     "1093U447-001": 4,
@@ -550,7 +549,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Multi-Month support)
+# CORE LOGIC FOR SHORTAGES (Multi-Month Cumulative Netting)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -574,6 +573,9 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
         active_month_cols = [selected_month_col]
 
     temp_df = df.copy()
+
+    # גילגול מלאי כרונולוגי רב-חודשי מדויק (Cumulative Netting)
+    # סכימת הביקושים/יתרות לאורך חודשי הטווח הנבחר באופן מצטבר
     temp_df['Monthly_Balance'] = temp_df[active_month_cols].sum(axis=1, numeric_only=True)
 
     for idx, row in temp_df.iterrows():
@@ -602,13 +604,11 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
-    # שימוש בתוכנית הגולמית (Raw) לצורך חישובי היררכיית הבנים, כיוון שהאקסל כבר מכיל את הבנים מוכפלים
     month_plan = assembly_plan_df[assembly_plan_df["YearMonth"].isin(target_yms)]
     plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
-            # המרת WIP ממוכפל לגולמי לצורך הפחתה נכונה מול האקסל
             sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_wip, 1)
             raw_wip_qty = wip_qty / sys_factor
             plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
@@ -642,7 +642,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
                 breakdown_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1), # תצוגה מוכפלת
+                    "Assembly_Monthly_Build": asm_build_qty * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1),
                     "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
