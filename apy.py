@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. טבלת CTB מטריציונית עם הפרדת עמודות וריכוז עמודות הכמויות וה-WIP בהתחלה ועמודות הסטטוס והחוסרים בסוף.
-2. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל הטבלאות.
-3. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
-4. ניהול סגירת WIP והמרתו למלאי, סימולציות What-If ותוכנית מרובת חודשים.
+1. חישוב מדויק של צוואר הבקבוק ההיררכי לכמות שניתן לייצור בפועל בכל הרכבה.
+2. טבלת CTB מטריציונית שבה עמודות הכמויות מרוכזות בהתחלה ועמודות הסטטוס והחוסרים בסוף.
+3. גרף חודשי מרוכז המציג בציר ה-X את קוד ותיאור ההרכבה, מול עמודות תוכנית הייצור, הכמות הניתנת לייצור וה-WIP.
+4. קישורים ישירים לחיפוש מלאי וכל יכולות ניהול הענן.
 
 הרצה:
 streamlit run mrp_app.py
@@ -797,13 +797,14 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית (עמודות כמויות בהתחלה, סטטוס וחוסרים בסוף)</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. כל עמודות התוכנית וה-WIP מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם השוואת כמויות וגרף הרכבות מפורט</div>', unsafe_allow_html=True)
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית, כמות ניתנת לייצור בפועל לפי חוסרים, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
     matrix_rows = []
+    chart_assembly_data = []
     assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
     for asm_col in assemblies_to_check:
@@ -820,18 +821,50 @@ with tab2:
 
         has_any_build = False
 
-        # שלב 1: איסוף וריכוז עמודות הכמויות וה-WIP תחילה
+        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית, ניתן לייצור בפועל, WIP) בהתחלה
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
             current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
-            net_build = max(0.0, raw_build - current_wip_qty)
 
             if raw_build > 0 or current_wip_qty > 0:
                 has_any_build = True
 
+            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
+            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
+
+            if not asm_shortages.empty and raw_build > 0:
+                max_possible_build = raw_build
+                for _, s_row in asm_shortages.iterrows():
+                    req_per = s_row["Qty_Per_Assembly"]
+                    if req_per > 0:
+                        comp_pn = str(s_row["PN"]).strip()
+                        comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
+                        if not comp_match.empty:
+                            c_row = comp_match.iloc[0]
+                            base_stk = pd.to_numeric(c_row.get(STOCK_COL, 0), errors='coerce') or 0
+                            saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_ctb)
+                            total_comp_stock = base_stk + saved_stk
+                            
+                            possible_from_this = total_comp_stock / req_per
+                            max_possible_build = min(max_possible_build, possible_from_this)
+                executable_qty = max(0.0, min(raw_build, max_possible_build))
+            else:
+                executable_qty = raw_build
+
             row_data[f"תכנית ייצור ({target_m})"] = raw_build
+            row_data[f"ניתן לייצור ({target_m})"] = executable_qty
             row_data[f"WIP ({target_m})"] = current_wip_qty
+
+            if raw_build > 0 or current_wip_qty > 0:
+                # שמירת נתונים לגרף לפי הרכבה ותיאור ההרכבה
+                chart_assembly_data.append({
+                    "הרכבה ותיאור": f"{asm_col} - {asm_desc}",
+                    "חודש": target_m,
+                    "תכנית ייצור": raw_build,
+                    "ניתן לייצור בפועל": executable_qty,
+                    "WIP": current_wip_qty
+                })
 
         # שלב 2: איסוף וריכוז עמודות הסטטוס והחוסרים בסוף
         for target_m in selected_target_yms:
@@ -881,7 +914,34 @@ with tab2:
 
     if matrix_rows:
         matrix_df = pd.DataFrame(matrix_rows)
-        st.dataframe(matrix_df, use_container_width=True, height=450)
+        st.dataframe(matrix_df, use_container_width=True, height=420)
+
+        # הצגת גרף מפורט לפי הרכבה ותיאור ההרכבה בציר ה-X
+        if chart_assembly_data:
+            chart_df = pd.DataFrame(chart_assembly_data)
+            chart_melted = chart_df.melt(
+                id_vars=["הרכבה ותיאור", "חודש"],
+                value_vars=["תכנית ייצור", "ניתן לייצור בפועל", "WIP"],
+                var_name="מדד",
+                value_name="כמות"
+            )
+
+            st.markdown("##### 📈 השוואת תוכנית ייצור, יכולת ביצוע בפועל ו-WIP לפי הרכבה ותיאור")
+            fig_bar_asm = px.bar(
+                chart_melted,
+                x="הרכבה ותיאור",
+                y="כמות",
+                color="מדד",
+                barmode="group",
+                color_discrete_sequence=[PRIMARY, SUCCESS, ACCENT]
+            )
+            fig_bar_asm.update_layout(
+                template=PLOTLY_TEMPLATE,
+                height=400,
+                margin=dict(t=20, b=40, l=20, r=20),
+                xaxis_tickangle=-25
+            )
+            st.plotly_chart(fig_bar_asm, use_container_width=True)
     else:
         st.info("לא נמצאו הרכבות מתוכננות לייצור בטווח החודשים שנבחר.")
 
