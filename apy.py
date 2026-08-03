@@ -1,8 +1,8 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. לוגיקת איחוד חוסרים רב-חודשי נכונה (Union of Shortages & Max Qty per Item across selected months).
-2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמו 16 ו-4).
+1. איחוד פריטים ייחודיים ברמת המק"ט (Unique Item Level Netting) – פתרון מלא לניפוח השורות והצגת המספר האמיתי של הפריטים החסרים (כ-130 פריטים בטווח).
+2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמה 16 ו-4).
 3. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
@@ -549,7 +549,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Multi-Month Union & Max Shortage)
+# CORE LOGIC FOR SHORTAGES (Unique Item Level Netting across range)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -572,9 +572,8 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
 
     temp_df = df.copy()
 
-    # לוגיקת איחוד חוסרים רב-חודשי (Union of Shortages & Max Shortage per item)
-    # פריט נחשב כחסר אם הוא בגירעון באחד לפחות מהחודשים בטווח הנבחר,
-    # וכמות החוסר שלו בטווח תהיה החוסר המקסימלי (או המחמיר ביותר) מבין החודשים הללו.
+    # לוגיקה מדויקת ברמת מק"ט ייחודי: בדיקת חוסר בכל חודש בנפרד מול המלאי הזמין,
+    # ולקיחת החוסר המקסימלי בטווח (או סימון חוסר אם קיים באחד החודשים בטווח).
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
@@ -591,11 +590,9 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
             col_name = target_month_cols_map.get(ym)
             if col_name and col_name in temp_df.columns:
                 monthly_demand = pd.to_numeric(row[col_name], errors='coerce') or 0
-                # יתרה חודשית ספציפית (מלאי זמין פחות ביקוש החודש)
-                month_balance = total_available_stock - monthly_demand
-                if month_balance < 0:
+                if monthly_demand > total_available_stock:
                     is_short = True
-                    sh_qty = abs(month_balance)
+                    sh_qty = monthly_demand - total_available_stock
                     if sh_qty > max_shortage_val:
                         max_shortage_val = sh_qty
 
