@@ -1,11 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. תבניות Excel (Templates) להורדה ישירה מתוך הסיידבר למניעת טעויות בסדר העמודות.
-2. ייבוא ETA מתקדם הכולל גם תאריך וגם כמות אספקה.
-3. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח.
-4. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת.
-5. טבלת CTB מטריציונית וגרף הרכבות מפורט.
+1. תיקון לוגיקת בדיקת היררכיה בטאב 5 (WIP) כך שתתבסס על לוגיקת ה-OR החודשית בטווח הנבחר ותזהה כל חוסר בשרשרת הבנים.
+2. תבניות Excel (Templates) להורדה ישירה מתוך הסיידבר.
+3. ייבוא ETA וכמות אספקה מתקדם מקובץ ספק.
+4. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
 streamlit run mrp_app.py
@@ -523,7 +522,6 @@ search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "ה�
 st.sidebar.divider()
 st.sidebar.markdown("##### 📥 עדכון ETA וכמות אספקה מקובץ ספק")
 
-# יצירת תבנית Excel להורדה לעדכון ETA וכמות
 eta_template_df = pd.DataFrame(columns=["PN", "ETA", "Qty"])
 eta_template_output = io.BytesIO()
 with pd.ExcelWriter(eta_template_output, engine='openpyxl') as writer:
@@ -568,7 +566,6 @@ if uploaded_eta_file is not None:
 st.sidebar.divider()
 st.sidebar.markdown("##### 📥 עדכון מלאי כללי מקובץ ספק")
 
-# יצירת תבנית Excel להורדה לעדכון מלאי כללי
 inv_template_df = pd.DataFrame(columns=["PN", "Stock"])
 inv_template_output = io.BytesIO()
 with pd.ExcelWriter(inv_template_output, engine='openpyxl') as writer:
@@ -610,11 +607,21 @@ if uploaded_inv_file is not None:
 # ==========================================================
 # CORE LOGIC FOR SHORTAGES (OR Condition Across MRP Columns)
 # ==========================================================
+all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
+start_idx = 0
+for idx, ym in enumerate(all_ym_list):
+    if ym >= selected_ym:
+        start_idx = idx
+        break
+selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead]
+if not selected_target_yms:
+    selected_target_yms = [selected_ym]
+
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
         sim_extra_stock = {}
     if target_yms is None:
-        target_yms = [selected_ym]
+        target_yms = selected_target_yms
 
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
@@ -738,16 +745,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
             res_df = res_df[res_df["PN"] == search_pn]
 
     return res_df
-
-all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
-start_idx = 0
-for idx, ym in enumerate(all_ym_list):
-    if ym >= selected_ym:
-        start_idx = idx
-        break
-selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead]
-if not selected_target_yms:
-    selected_target_yms = [selected_ym]
 
 breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
@@ -1098,7 +1095,7 @@ with tab4:
 
 with tab5:
     st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (כולל סגירת מחזור ייצור ואימות היררכיה)</div>', unsafe_allow_html=True)
-    st.markdown("כאן ניתן להוריד הרכבות לייצור לאחר בדיקת עץ קפדנית (מצטבר על קיים), או לדווח על סיום תהליך ייצור בסוף חודש.")
+    st.markdown("כאן ניתן להוריד הרכבות לייצור לאחר בדיקת עץ קפדנית המבוססת על לוגיקת החוסרים בטווח הנבחר.")
 
     wip_current = fetch_wip_records()
 
@@ -1178,35 +1175,42 @@ with tab5:
                     for _, d_row in direct_rows.iterrows():
                         all_child_pns.add(str(d_row[PN_COL]).strip())
 
+                # שליפת כל החוסרים בטווח הנבחר באמצעות פונקציית החוסרים המרכזית (לוגיקת OR חודשית)
+                current_shortages_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
+
                 for c_pn in all_child_pns:
                     if c_pn == target_asm:
                         continue
                     
-                    match_row = df[df[PN_COL].astype(str).str.strip() == c_pn]
-                    if match_row.empty:
-                        continue
+                    # בדיקה האם הרכיב מופיע ברשימת החוסרים לטווח הנבחר
+                    shortage_match = current_shortages_df[current_shortages_df["PN"].astype(str).str.strip() == c_pn] if not current_shortages_df.empty else pd.DataFrame()
                     
-                    r_data = match_row.iloc[0]
-                    monthly_bal = pd.to_numeric(r_data.get(selected_month_col, 0), errors='coerce') or 0
-                    added_stk, man_eta, _, _, _, _, _ = get_inventory_record(c_pn, inv_cache_wip)
-                    eff_bal = monthly_bal + added_stk
-
-                    is_late = False
-                    if man_eta and str(man_eta).strip() not in ["", "None", "NaT", "nan"]:
-                        try:
-                            if pd.to_datetime(man_eta).strftime("%Y-%m") > selected_ym:
-                                is_late = True
-                        except:
-                            pass
-
-                    if eff_bal < 0 or is_late:
-                        q_missing = abs(eff_bal) if eff_bal < 0 else 1.0
-                        desc_text = str(r_data.get(DESC_COL, ""))
+                    if not shortage_match.empty:
+                        s_row = shortage_match.iloc[0]
+                        q_missing = s_row["Total_MRP_Shortage"]
+                        desc_text = s_row["Description"]
                         issues.append({
                             "PN": c_pn,
                             "Description": desc_text,
-                            "Reason": f"גירעון של {q_missing:g} יח'" if eff_bal < 0 else f"עיכוב ספק (ETA: {man_eta})"
+                            "Reason": f"גירעון ב-MRP בסך של {q_missing:g} יח' בטווח הנבחר ({', '.join(selected_target_yms)})"
                         })
+                    else:
+                        # בדיקת עיכוב ETA חריג מעבר לטווח הנבחר
+                        match_row = df[df[PN_COL].astype(str).str.strip() == c_pn]
+                        if not match_row.empty:
+                            r_data = match_row.iloc[0]
+                            _, man_eta, _, _, _, _, _ = get_inventory_record(c_pn, inv_cache_wip)
+                            if man_eta and str(man_eta).strip() not in ["", "None", "NaT", "nan"]:
+                                try:
+                                    if pd.to_datetime(man_eta).strftime("%Y-%m") > max(selected_target_yms):
+                                        desc_text = str(r_data.get(DESC_COL, ""))
+                                        issues.append({
+                                            "PN": c_pn,
+                                            "Description": desc_text,
+                                            "Reason": f"עיכוב ספק (ETA: {man_eta}) חורג מטווח החודשים הנבחר"
+                                        })
+                                except:
+                                    pass
 
                 return issues
 
