@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מותאמת ומהירה: שליפת נתונים מרוכזת מ-Supabase (במקום פניות בודדות) למניעת איטיות.
-גרסה 2 — עיצוב משודרג, גרפים נוספים, KPI-cards מעוצבים והתאמה אוטומטית למצב בהיר/כהה במכשיר.
+כולל ניהול ETA, דחיות ספקים (Delay Tracking) ולשונית מעקב ETA ייעודית.
 
 הרצה:
 streamlit run mrp_app.py
@@ -57,7 +57,7 @@ st.markdown(f"""
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 
-/* Header banner - צבעי גרדיאנט קבועים שיישארו בולטים ויפים בכל תמה */
+/* Header banner */
 .hero-banner {{
     background: linear-gradient(120deg, {PRIMARY} 0%, {PRIMARY_DARK} 45%, {ACCENT} 100%);
     padding: 28px 32px;
@@ -77,7 +77,7 @@ footer {{visibility: hidden;}}
     margin-top: 6px;
 }}
 
-/* KPI cards - התאמה אוטומטית למצב בהיר וכהה לפי העדפת המכשיר/דפדפן */
+/* KPI cards */
 .kpi-card {{
     background-color: var(--secondary-background-color);
     color: var(--text-color);
@@ -110,7 +110,6 @@ footer {{visibility: hidden;}}
 .kpi-orange {{ border-top: 4px solid {WARNING}; }}
 .kpi-blue {{ border-top: 4px solid {ACCENT}; }}
 
-/* מניעת מסך שחור במובייל: גיבוי למקרה שהמשתמש נמצא במצב בהיר במכשיר אך הדפדפן כופה רקע */
 @media (prefers-color-scheme: light) {{
     .kpi-card, .kanban-card {{
         background-color: #ffffff !important;
@@ -127,7 +126,6 @@ footer {{visibility: hidden;}}
     }}
 }}
 
-/* Section titles */
 .section-title {{
     font-weight: 800;
     font-size: 19px;
@@ -137,7 +135,6 @@ footer {{visibility: hidden;}}
     color: var(--text-color, inherit);
 }}
 
-/* Kanban columns */
 .kanban-col-header {{
     font-weight: 800;
     font-size: 15px;
@@ -157,26 +154,16 @@ footer {{visibility: hidden;}}
 
 .stMetric {{ border: 1px solid rgba(128,128,128,0.2); border-radius: 8px; padding: 10px; }}
 
-/* ===================== מובייל ===================== */
 @media (max-width: 640px) {{
     .hero-banner {{ padding: 18px 16px; border-radius: 14px; }}
     .hero-banner h1 {{ font-size: 21px; }}
     .hero-banner p {{ font-size: 13px; }}
-
     .kpi-value {{ font-size: 22px; }}
     .kpi-label {{ font-size: 12px; }}
     .kpi-card {{ padding: 14px 10px; }}
-
     .section-title {{ font-size: 16px; }}
-
-    /* גורם לעמודות (KPI / גרפים) להיערם אנכית זו מתחת לזו במקום להצטופף לרוחב */
-    [data-testid="stHorizontalBlock"] {{
-        flex-wrap: wrap !important;
-    }}
-    [data-testid="column"] {{
-        min-width: 100% !important;
-        flex: 1 1 100% !important;
-    }}
+    [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
+    [data-testid="column"] {{ min-width: 100% !important; flex: 1 1 100% !important; }}
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -204,7 +191,6 @@ try:
 except Exception:
     _theme_base = None
 
-# התאמה אוטומטית גם לגרפים של Plotly לפי התמה של המערכת/מכשיר
 PLOTLY_TEMPLATE = "plotly_white" if _theme_base == "light" else "plotly_dark"
 COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#34D399"]
 
@@ -369,11 +355,8 @@ for col in valid_assemblies:
 
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
-def get_first_supply_eta(pn, inv_cache=None):
-    _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
-    if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
-        return manual_eta
-
+def get_base_mrp_eta(pn):
+    """שולף את ה-ETA המקורי שמגיע ישירות מקובץ ה-MRP של גוויטה/GitHub"""
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
@@ -392,8 +375,14 @@ def get_first_supply_eta(pn, inv_cache=None):
                                 return dt.strftime("%Y-%m")
             except:
                 pass
-
     return "בדיקה נדרשת"
+
+def get_first_supply_eta(pn, inv_cache=None):
+    """מחזיר את ה-ETA הפעיל: מעודכן מהענן אם קיים, אחרת מקורי מה-MRP"""
+    _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+    if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
+        return manual_eta
+    return get_base_mrp_eta(pn)
 
 # ==========================================================
 # SIDEBAR FILTERS & WHAT-IF CONTROLS
@@ -537,14 +526,15 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
 breakdown_df = calculate_mrp_breakdown()
 
 # ==========================================================
-# TABS
+# TABS (Updated with new ETA Tracking Tab)
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
     "📌 לוח סטטוסים (Kanban)",
     "📅 עדכון מלאי וספקים",
+    "📅 מעקב ETA ודחיות",
     "↩️ ניהול UNDO"
 ])
 
@@ -707,7 +697,7 @@ with tab1:
 
 with tab2:
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}</div>', unsafe_allow_html=True)
-    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק של הרכיבים החסרים ומדגישה ב-**BOLD** את הפריט הקריטי.")
+    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק (כולל דחיות ספקים מעודכנות) ומדגישה ב-**BOLD** את הפריט הקריטי.")
 
     inv_cache_ctb = fetch_all_inventory_records()
 
@@ -897,21 +887,27 @@ with tab4:
                 st.caption(f"+ עוד {count - 6} פריטים נוספים")
 
 with tab5:
-    st.markdown('<div class="section-title">📅 עדכון מלאי וסטטוס (שמירה קבועה בענן)</div>', unsafe_allow_html=True)
-    st.markdown("**הזנת הנתונים בלשונית זו תשמור אותם באופן קבוע בבסיס הנתונים בענן ותשפיע מיידית על כל החישובים.**")
+    st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
+    st.markdown("**הזנת נתונים בלשונית זו מאפשרת מתן דרגות חופש לעדכון מועדי הגעה (למשל דחייה שקיבלת מהספק) ושמירה קבועה בענן.**")
 
-    selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()))
+    selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()), key="update_pn_select")
 
     if selected_pn != "הכל":
         saved_stock, saved_eta, saved_status, saved_supplier, saved_comment, saved_by, _ = get_inventory_record(selected_pn)
+        base_mrp_eta = get_base_mrp_eta(selected_pn)
+
+        st.info(f"ℹ️ מועד ה-ETA המקורי שעלה מדוח ה-MRP עבור מק\"ט זה הוא: **{base_mrp_eta}**")
+
         with st.form("inventory_form"):
             col_f1, col_f2, col_f3 = st.columns(3)
             with col_f1:
                 added_stock_input = st.number_input("תוספת למלאי זמין (קבוע)", min_value=0.0, value=float(saved_stock), step=1.0)
             with col_f2:
-                try: parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else date.today()
-                except: parsed_eta = date.today()
-                eta_date = st.date_input("תאריך הגעה (ETA)", value=parsed_eta)
+                try: 
+                    parsed_eta = pd.to_datetime(saved_eta).date() if saved_eta else (pd.to_datetime(base_mrp_eta).date() if base_mrp_eta != "בדיקה נדרשת" else date.today())
+                except: 
+                    parsed_eta = date.today()
+                eta_date = st.date_input("תאריך הגעה מעודכן (ETA / דחיית ספק)", value=parsed_eta)
             with col_f3:
                 status_options = ["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]
                 status_idx = status_options.index(saved_status) if saved_status in status_options else 0
@@ -923,7 +919,7 @@ with tab5:
                 supplier = st.selectbox("ספק", supplier_options, index=sup_idx)
             with col_f5:
                 updated_by = st.text_input("עודכן ע\"י", value=saved_by)
-            comment = st.text_area("הערות", value=saved_comment)
+            comment = st.text_area("הערות (פירוט סיבת דחייה וכו')", value=saved_comment)
 
             if st.form_submit_button("שמור עדכון קבוע בענן"):
                 save_inventory_record(selected_pn, added_stock_input, str(eta_date), status, supplier, comment, updated_by, webhook_url)
@@ -931,6 +927,87 @@ with tab5:
                 st.rerun()
 
 with tab6:
+    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA ודחיות</div>', unsafe_allow_html=True)
+    st.markdown("טבלה מרכזת המציגה את כל הפריטים, מועדי ה-ETA המקוריים מה-MRP, ה-ETA המעודכן (בעקבות דחיית ספק), והערה אוטומטית על שינויים.")
+
+    inv_cache_all = fetch_all_inventory_records()
+    eta_table_rows = []
+
+    for _, row in df.iterrows():
+        p_num = str(row[PN_COL]).strip()
+        if not p_num or p_num == 'nan':
+            continue
+        p_desc = str(row[DESC_COL])
+        p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+
+        orig_eta = get_base_mrp_eta(p_num)
+        
+        saved_rec = inv_cache_all.get(p_num, {})
+        current_eta_raw = saved_rec.get("eta", "")
+        
+        if current_eta_raw and str(current_eta_raw).strip() not in ["", "None", "NaT", "nan"]:
+            try:
+                curr_eta_fmt = pd.to_datetime(current_eta_raw).strftime("%Y-%m")
+            except:
+                curr_eta_fmt = str(current_eta_raw)[:7]
+        else:
+            curr_eta_fmt = orig_eta
+
+        # חישוב הערת דחייה בהתאם להנחיה שלך
+        if orig_eta != "בדיקה נדרשת" and curr_eta_fmt != "בדיקה נדרשת" and curr_eta_fmt != orig_eta:
+            note = f"נדחה מחודש {orig_eta} לחודש {curr_eta_fmt}"
+        elif curr_eta_fmt != "בדיקה נדרשת" and orig_eta == "בדיקה נדרשת":
+            note = f"עודכן ל-ETA: {curr_eta_fmt}"
+        else:
+            note = "ללא שינוי / לפי תכנון מקורי"
+
+        eta_table_rows.append({
+            "מק\"ט": p_num,
+            "תיאור פריט": p_desc,
+            "סוג פריט": p_type,
+            "ETA מקורי (MRP)": orig_eta,
+            "ETA מעודכן (בפועל)": curr_eta_fmt,
+            "סטטוס ספק/דחייה": note,
+            "ספק": saved_rec.get("supplier", "אופק"),
+            "הערות משתמש": saved_rec.get("comment", "")
+        })
+
+    eta_df = pd.DataFrame(eta_table_rows)
+    
+    if not eta_df.empty:
+        # אפשרות סינון מהירה בתוך הלשונית
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            filter_delayed_only = st.checkbox("הצג פריטים שנדחו בלבד")
+        with col_s2:
+            search_eta_pn = st.text_input("חיפוש חופשי לפי מק\"ט או תיאור בלשונית זו", value="")
+
+        filtered_eta_df = eta_df.copy()
+        if filter_delayed_only:
+            filtered_eta_df = filtered_eta_df[filtered_eta_df["סטטוס ספק/דחייה"].str.startswith("נדחה")]
+        if search_eta_pn:
+            filtered_eta_df = filtered_eta_df[
+                filtered_eta_df["מק\"ט"].str.contains(search_eta_pn, case=False, na=False) |
+                filtered_eta_df["תיאור פריט"].str.contains(search_eta_pn, case=False, na=False)
+            ]
+
+        st.dataframe(filtered_eta_df, use_container_width=True, height=450)
+
+        output_eta = io.BytesIO()
+        with pd.ExcelWriter(output_eta, engine='openpyxl') as writer:
+            filtered_eta_df.to_excel(writer, index=False, sheet_name='ETA_Tracking_Report')
+        processed_eta_data = output_eta.getvalue()
+
+        st.download_button(
+            label="📥 הורד דו\"ח מעקב ETA ודחיות ל-Excel",
+            data=processed_eta_data,
+            file_name=f"MRP_ETA_Tracking_Report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.info("לא נמצאו נתוני ETA להצגה.")
+
+with tab7:
     st.markdown('<div class="section-title">↩️ חזרה לאחור וניהול היסטוריה (UNDO)</div>', unsafe_allow_html=True)
     try:
         response = supabase.table("mrp_inventory_updates").select("*").order("updated_at", desc=True).execute()
@@ -955,7 +1032,7 @@ with tab6:
                     st.markdown(f"**מק\"ט:** `{i_pn}`")
                     st.text(f"ספק: {i_sup} | סטטוס: {i_status}")
                 with col_u2:
-                    st.text(f"תוספת: {i_stock} | ETA: {i_eta}")
+                    st.text(f"תוספת: {i_stock} | ETA מעודכן: {i_eta}")
                     st.text(f"עודכן ע\"י: {i_by} ({i_time})")
                 with col_u3:
                     if st.button("🔄 בטל שמירה (UNDO)", key=f"undo_{i_pn}"):
