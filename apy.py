@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתקדמת ומדויקת (ספירת מק"טים מלאה וישירה):
-1. תיקון ETA (הורדת חודש מדויק לדוח).
-2. שעון ישראל מעודכן.
-3. ספירת חוסרים ישירה ומלאה ללא סינון שורות עץ מיותר.
-4. ניהול WIP ודחיות ספקים.
+גרסה מתקדמת הכוללת:
+1. שליפת ETA מדויקת מה-MRP.
+2. שעון ישראל מעודכן (UTC+3).
+3. מנגנון בקרת WIP חכם הכולל בדיקת חוסרים מקדימה, פירוט מק"טים ותשאול קליטת מלאי.
+4. ניהול דחיות ספקים ו-UNDO.
 
 הרצה:
 streamlit run mrp_app.py
@@ -476,7 +476,7 @@ search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "ה�
 
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (DIRECT UNFILTERED SHORTAGE ENGINE)
+# CORE LOGIC FOR SHORTAGES
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None):
     if sim_extra_stock is None:
@@ -488,7 +488,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
 
-    # הוספת תוספות מלאי ידניות או סימולציה
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -501,7 +500,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             if current_bal < 0:
                 temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
-    # בדיקה ישירה של כל פריט שנדחה אחרי חודש התוכנית (או שלא הגיע בזמן)
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -509,7 +507,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             try:
                 eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
                 if eta_ym > selected_ym:
-                    # פריט שסופק באיחור אחרי חודש הייצור נספר ישירות כגירעוני לחודש זה
                     temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance']) if temp_df.at[idx, 'Monthly_Balance'] < 0 else -1.0
             except:
                 pass
@@ -537,7 +534,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
         total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
 
-        # נוודא שכל פריט גירעוני נכנס לטבלה לפחות פעם אחת גם אם אינו משויך ישירות לעץ המוצג
         added_for_this_pn = False
         for asm in filtered_assembly_cols:
             qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
@@ -904,18 +900,39 @@ with tab4:
                 st.caption(f"+ עוד {count - 6} פריטים נוספים")
 
 with tab5:
-    st.markdown(f'<div class="section-title">🏭 ניהול WIP (הרכבות שכבר ירדו לייצור בחודש {selected_month_label})</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (ירידה לייצור לחודש {selected_month_label})</div>', unsafe_allow_html=True)
+    st.markdown("כאשר תבחר הרכבה לרדת לייצור, המערכת תבדוק אוטומטית שאין חוסרים ברכיבים שלה. אם יש חוסרים, המערכת תציג אותם ותשאל אותך האם הפריטים הגיעו.")
+
     wip_current = fetch_wip_records()
 
     with st.form("wip_form"):
-        wip_asm_choice = st.selectbox("בחר הרכבה שירדה לייצור", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
+        wip_asm_choice = st.selectbox("בחר הרכבה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
         current_wip_val = wip_current.get(wip_asm_choice, 0.0)
-        wip_qty_input = st.number_input("כמות יחידות הרכבה שכבר ב-WIP", min_value=0.0, value=float(current_wip_val), step=1.0)
+        wip_qty_input = st.number_input("כמות יחידות הרכבה להורדה לייצור", min_value=0.0, value=float(current_wip_val if current_wip_val > 0 else 1.0), step=1.0)
 
-        if st.form_submit_button("שמור הגדרת WIP בענן"):
-            save_wip_record(wip_asm_choice, wip_qty_input)
-            st.success(f"ה-WIP עבור הרכבה {wip_asm_choice} עודכן בהצלחה והביקוש נגרע מהחישובים!")
-            st.rerun()
+        submitted_wip = st.form_submit_button("בדוק חוסרים ושמור WIP")
+
+        if submitted_wip:
+            # 1. בדיקת חוסרים ספציפית להרכבה הנבחרת
+            asm_shortages_check = breakdown_df[breakdown_df["Assembly"] == wip_asm_choice] if not breakdown_df.empty else pd.DataFrame()
+            
+            if not asm_shortages_check.empty:
+                # יש חוסרים! נפרט אותם למשתמש
+                missing_list_str = []
+                for _, s_row in asm_shortages_check.iterrows():
+                    missing_list_str.append(f"מק\"ט: `{s_row['PN']}` ({s_row['Description']}) - חסר: {s_row['Total_MRP_Shortage']:g}")
+                
+                st.error(f"❌ שגיאה: לא ניתן להוריד את הרכבה {wip_asm_choice} לייצור בגלל חוסרים קיימים!")
+                st.markdown("**הפריטים החסרים הבאים דורשים טיפול:**")
+                for m_item in missing_list_str:
+                    st.markdown(f"- {m_item}")
+                
+                st.warning("💡 האם הפריטים החסרים הללו הגיעו? אם כן, תוכל לעדכן את כמות המלאי או ה-ETA שלהם בלשונית 'עדכון מלאי וספקים', ולאחר מכן לנסות שוב.")
+            else:
+                # אין חוסרים בכלל! ניתן לשמור ישירות ב-WIP
+                save_wip_record(wip_asm_choice, wip_qty_input)
+                st.success(f"✅ מעולה! נמצאה זמינות מלאה (Clear To Build) להרכבה {wip_asm_choice}. ה-WIP נשמר בהצלחה והביקוש נגרע מהמערכת!")
+                st.rerun()
 
     st.markdown("##### 📋 רשימת ההרכבות הפעילות ב-WIP כרגע:")
     if wip_current:
