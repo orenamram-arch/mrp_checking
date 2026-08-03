@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מדויקת לחלוטין:
+גרסה מתקדמת ומדויקת (ספירת מק"טים מלאה וישירה):
 1. תיקון ETA (הורדת חודש מדויק לדוח).
 2. שעון ישראל מעודכן.
-3. ספירת חוסרים מדויקת לפי מק"טים ייחודיים (כולל עדכון 75->76 בעקבות דחייה).
+3. ספירת חוסרים ישירה ומלאה ללא סינון שורות עץ מיותר.
 4. ניהול WIP ודחיות ספקים.
 
 הרצה:
@@ -476,7 +476,7 @@ search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "ה�
 
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (INCLUDING WIP DEMAND REDUCTION)
+# CORE LOGIC FOR SHORTAGES (DIRECT UNFILTERED SHORTAGE ENGINE)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None):
     if sim_extra_stock is None:
@@ -488,6 +488,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
 
+    # הוספת תוספות מלאי ידניות או סימולציה
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -500,20 +501,16 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             if current_bal < 0:
                 temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
-    # בחינת פריטים שנדחו או שאינם זמינים בחודש הנבחר (כולל בדיקת ETA מאוחר יותר מחודש התוכנית)
-    # פריט שנדחה לחודש מאחר יותר נחשב כגירעוני וחסר לתאריך היעד
-    mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
-
-    # בדיקה האם יש פריטים שקיבלו ETA מעודכן (דחיית ספק) לחודש מאחר יותר מחודש הביקורת
+    # בדיקה ישירה של כל פריט שנדחה אחרי חודש התוכנית (או שלא הגיע בזמן)
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
             try:
                 eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
-                if eta_ym > selected_ym and temp_df.at[idx, 'Monthly_Balance'] >= 0:
-                    # אם הפריט היה מאוזן אבל ה-ETA שלו נדחה אחרי חודש הייצור - הוא הופך לחסר!
-                    temp_df.at[idx, 'Monthly_Balance'] = -1.0 # מכניס לגירעון
+                if eta_ym > selected_ym:
+                    # פריט שסופק באיחור אחרי חודש הייצור נספר ישירות כגירעוני לחודש זה
+                    temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance']) if temp_df.at[idx, 'Monthly_Balance'] < 0 else -1.0
             except:
                 pass
 
@@ -538,27 +535,26 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
         stock = base_stock + saved_stock_add + sim_extra_stock.get(pn, 0.0)
 
         total_mrp_shortage = row['Total_MRP_Shortage']
-
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
-        matched_any = False
 
+        # נוודא שכל פריט גירעוני נכנס לטבלה לפחות פעם אחת גם אם אינו משויך ישירות לעץ המוצג
+        added_for_this_pn = False
         for asm in filtered_assembly_cols:
             qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
             if qty_per_asm > 0:
-                matched_any = True
+                added_for_this_pn = True
                 asm_build_qty = plan_dict.get(asm, 0.0)
                 required_demand = qty_per_asm * asm_build_qty
                 asm_desc = assembly_mapping.get(asm, asm)
 
-                if asm_build_qty > 0:
-                    breakdown_rows.append({
-                        "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
-                        "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                        "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
-                        "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
-                    })
+                breakdown_rows.append({
+                    "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
+                    "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
+                    "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
+                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+                })
 
-        if not matched_any and selected_assembly == "הכל" and selected_level == "הכל":
+        if not added_for_this_pn:
             breakdown_rows.append({
                 "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                 "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
