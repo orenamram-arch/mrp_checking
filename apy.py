@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מעודכנת הכוללת:
-1. איפוס מסננים מלא (Clear All).
-2. עמודת חודש ייצור בטבלת תוכנית מרובת חודשים.
-3. הצגת כמות לצד ה-ETA בלשונית מעקב ETA.
-4. ניהול סגירת WIP, מעקב ענן ותיקוני מחרוזות.
+גרסה מעודכנת המציגה את הכמות לצד תאריך ה-ETA מתוך עמודות CC עד CZ (והלאה) בקובץ המקורי:
+1. שליפה ודחיפה מדויקת של כמויות לפי תאריכי ETA רוחביים.
+2. איפוס מסננים מלא (Clear All).
+3. עמודת חודש ייצור בטבלת תוכנית מרובת חודשים.
+4. ניהול סגירת WIP ומעקב ענן.
 
 הרצה:
 streamlit run mrp_app.py
@@ -382,12 +382,13 @@ for col in valid_assemblies:
 
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
-def get_base_mrp_eta(pn):
+def get_base_mrp_eta_and_qty(pn):
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
         max_cols = df_raw.shape[1]
 
+        # סריקת עמודות מ-50 ועד סוף הטבלה (כולל CC עד CZ ואילך) לאיתור תאריך ETA וכמות
         for col_pos in range(50, max_cols):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
@@ -398,14 +399,22 @@ def get_base_mrp_eta(pn):
                         if pd.notnull(date_val):
                             if isinstance(date_val, datetime):
                                 corrected_dt = date_val - pd.DateOffset(months=1)
-                                return corrected_dt.strftime("%Y-%m")
+                                return corrected_dt.strftime("%Y-%m"), q
                             dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
                             if pd.notnull(dt) and dt.year >= 2024:
                                 corrected_dt = dt - pd.DateOffset(months=1)
-                                return corrected_dt.strftime("%Y-%m")
+                                return corrected_dt.strftime("%Y-%m"), q
             except:
                 pass
-    return "בדיקה נדרשת"
+    return "בדיקה נדרשת", 0.0
+
+def get_base_mrp_eta(pn):
+    eta, _ = get_base_mrp_eta_and_qty(pn)
+    return eta
+
+def get_base_mrp_qty(pn):
+    _, qty = get_base_mrp_eta_and_qty(pn)
+    return qty
 
 def get_first_supply_eta(pn, inv_cache=None):
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -422,13 +431,11 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 
 st.sidebar.header("🔍 מסננים מתקדמים")
 
-# Clear All button handling
 if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
 
-# Filter future months by default (from current month onwards)
 current_ym_str = datetime.now().strftime("%Y-%m")
 month_options = {}
 for m in MONTH_COLS:
@@ -458,7 +465,6 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-# Multi-month view selection
 num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1)
 
 level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
@@ -1065,8 +1071,9 @@ with tab6:
     if selected_pn != "הכל":
         saved_stock, saved_eta, saved_status, saved_supplier, saved_comment, saved_by, _ = get_inventory_record(selected_pn)
         base_mrp_eta = get_base_mrp_eta(selected_pn)
+        base_mrp_qty = get_base_mrp_qty(selected_pn)
 
-        st.info(f"ℹ️ מועד ה-ETA המקורי שעלה מדוח ה-MRP עבור מק'ט זה הוא: **{base_mrp_eta}**")
+        st.info(f"ℹ️ מועד ה-ETA המקורי והכמות שעלו מדוח ה-MRP (עמודות CC עד CZ) עבור מק'ט זה הם: **{base_mrp_eta}** | כמות: **{base_mrp_qty:g}**")
 
         with st.form("inventory_form"):
             col_f1, col_f2, col_f3 = st.columns(3)
@@ -1097,7 +1104,7 @@ with tab6:
                 st.rerun()
 
 with tab7:
-    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA, דחיות וכמויות</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA, דחיות וכמויות (מתוך CC-CZ)</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
 
@@ -1109,6 +1116,8 @@ with tab7:
         p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
 
         orig_eta = get_base_mrp_eta(p_num)
+        orig_qty = get_base_mrp_qty(p_num)
+        
         saved_rec = inv_cache_all.get(p_num, {})
         current_eta_raw = saved_rec.get("eta", "")
         current_added_stock = saved_rec.get("added_stock", 0.0)
@@ -1133,6 +1142,7 @@ with tab7:
             "תיאור פריט": p_desc,
             "סוג פריט": p_type,
             "ETA מקורי (MRP)": orig_eta,
+            "כמות מקורית (CC-CZ)": orig_qty,
             "ETA מעודכן (בפועל)": curr_eta_fmt,
             "כמות מעודכנת (Added Stock)": current_added_stock,
             "סטטוס ספק/דחייה": note,
