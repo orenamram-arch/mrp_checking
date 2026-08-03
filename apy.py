@@ -1,9 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. גילגול מלאי רב-חודשי כרונולוגי (Cumulative Netting) – פתרון בעיית סכימת החוסרים בין חודשים.
-2. התאמת מקדמי מערכת (כמו 16 או 4) לתצוגת תוכנית העבודה תוך שמירת חישוב הבנים באקסל.
-3. ניהול WIP מצטבר עם בדיקות היררכיות מלאות וחיווי ברור.
+1. לוגיקת איחוד חוסרים רב-חודשי נכונה (Union of Shortages & Max Qty per Item across selected months).
+2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמו 16 ו-4).
+3. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
 streamlit run mrp_app.py
@@ -549,7 +549,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Multi-Month Cumulative Netting)
+# CORE LOGIC FOR SHORTAGES (Multi-Month Union & Max Shortage)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -560,35 +560,49 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
-    active_month_cols = []
+    target_month_cols_map = {}
     for m_c in MONTH_COLS:
         if pd.notnull(m_c):
             try:
                 m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
                 if m_dt_ym in target_yms:
-                    active_month_cols.append(m_c)
+                    target_month_cols_map[m_dt_ym] = m_c
             except:
                 pass
-    if not active_month_cols:
-        active_month_cols = [selected_month_col]
 
     temp_df = df.copy()
 
-    # גילגול מלאי כרונולוגי רב-חודשי מדויק (Cumulative Netting)
-    # סכימת הביקושים/יתרות לאורך חודשי הטווח הנבחר באופן מצטבר
-    temp_df['Monthly_Balance'] = temp_df[active_month_cols].sum(axis=1, numeric_only=True)
+    # לוגיקת איחוד חוסרים רב-חודשי (Union of Shortages & Max Shortage per item)
+    # פריט נחשב כחסר אם הוא בגירעון באחד לפחות מהחודשים בטווח הנבחר,
+    # וכמות החוסר שלו בטווח תהיה החוסר המקסימלי (או המחמיר ביותר) מבין החודשים הללו.
+    shortage_records = {}
 
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
+        base_stk = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         sim_val = sim_extra_stock.get(pn, 0.0)
+        total_available_stock = base_stk + saved_stock_add + sim_val
 
-        total_added_stock = saved_stock_add + sim_val
+        max_shortage_val = 0.0
+        is_short = False
 
-        if total_added_stock > 0:
-            current_bal = temp_df.at[idx, 'Monthly_Balance']
-            if current_bal < 0:
-                temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
+        for ym in target_yms:
+            col_name = target_month_cols_map.get(ym)
+            if col_name and col_name in temp_df.columns:
+                monthly_demand = pd.to_numeric(row[col_name], errors='coerce') or 0
+                # יתרה חודשית ספציפית (מלאי זמין פחות ביקוש החודש)
+                month_balance = total_available_stock - monthly_demand
+                if month_balance < 0:
+                    is_short = True
+                    sh_qty = abs(month_balance)
+                    if sh_qty > max_shortage_val:
+                        max_shortage_val = sh_qty
+
+        if is_short:
+            shortage_records[idx] = max_shortage_val
+
+    temp_df['Monthly_Balance'] = temp_df.index.map(lambda i: -shortage_records[i] if i in shortage_records else 1.0)
 
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
@@ -596,8 +610,9 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
         if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
             try:
                 eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
-                if eta_ym > selected_ym:
-                    temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance']) if temp_df.at[idx, 'Monthly_Balance'] < 0 else -1.0
+                if eta_ym > max(target_yms):
+                    if idx in shortage_records:
+                        temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance'])
             except:
                 pass
 
