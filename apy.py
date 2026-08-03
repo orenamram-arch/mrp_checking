@@ -1,10 +1,9 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. חישוב מדויק של כמות ניתנת לייצור בפועל המפחיתה את ה-WIP הקיים ($Y - Z$).
-2. ניהול WIP מצטבר (הוספה על קיים ללא דריסה) עם אינדיקציות והתראות חוסרים היררכיות.
-3. טבלת CTB מטריציונית וגרף הרכבות מפורט (קוד + תתיאור הרכבה בציר X).
-4. קישורים ישירים לחיפוש מלאי וניהול ענן מלא.
+1. התאמת תצוגת תוכנית העבודה והגרפים להכפלת יחסי הקשר למערכת (לפי רשימת ה-PN שבתמונה: 4 או 16), תוך שמירת חישוב חוסרי הבנים המקורי באקסל ללא כפילות.
+2. ניהול WIP מצטבר (הוספה על קיים) עם בדיקת זמינות היררכית ואינדיקציות ברורות.
+3. טבלת CTB מטריציונית וקישורי מפיצים מלאים.
 
 הרצה:
 streamlit run mrp_app.py
@@ -21,9 +20,18 @@ import json
 from supabase import create_client, Client
 
 # ==========================================================
-# CONFIGURATION
+# CONFIGURATION & SYSTEM FACTORS
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
+
+# מילון מקדמי הקשר למערכת עבור ההרכבות הספציפיות (לפי טבלת יחסי הקשר)
+ASSEMBLY_SYSTEM_FACTORS = {
+    "1096G860-002": 4,
+    "1093U447-001": 4,
+    "1093M635-003": 16,
+    "1096B650-003": 16,
+    "1096G880-003": 4
+}
 
 st.set_page_config(
     page_title="MRP Executive Control Tower",
@@ -339,6 +347,9 @@ plan_rows = []
 for r in range(3, min(24, df_raw.shape[0])):
     asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
     if pd.notnull(asm_pn):
+        clean_asm_pn = str(asm_pn).strip()
+        system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
+
         for c_idx, date_val in enumerate(header_dates):
             if pd.notnull(date_val):
                 qty = df_raw.iloc[r, 108 + c_idx]
@@ -347,10 +358,13 @@ for r in range(3, min(24, df_raw.shape[0])):
                         q_val = float(qty)
                         if q_val > 0:
                             dt = pd.to_datetime(date_val)
+                            # תצוגה / תוכנית העבודה מוכפלת במקדם הקשר למערכת לפי דרישת המשתמש
+                            displayed_build_qty = q_val * system_multiplier
                             plan_rows.append({
-                                "Assembly_PN": str(asm_pn).strip(),
+                                "Assembly_PN": clean_asm_pn,
                                 "YearMonth": dt.strftime("%Y-%m"),
-                                "Build_Qty": q_val
+                                "Build_Qty": displayed_build_qty,
+                                "Raw_Build_Qty": q_val  # נשמר לצורך חישובי היררכיה פנימיים אם נדרש
                             })
                     except:
                         pass
@@ -802,7 +816,7 @@ with tab1:
 
 with tab2:
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם השוואת כמויות וגרף הרכבות מפורט</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית, כמות ניתנת לייצור בפועל, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית משוכללת, כמות ניתנת לייצור בפועל, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
@@ -825,7 +839,7 @@ with tab2:
 
         has_any_build = False
 
-        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית, ניתן לייצור בפועל אחרי הפחתת WIP, WIP) בהתחלה
+        # שלב 1: איסוף וריכוז עמודות הכמויות (תוכנית מוכפלת, ניתן לייצור בפועל פחות WIP, WIP) בהתחלה
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
@@ -856,7 +870,6 @@ with tab2:
             else:
                 gross_executable = raw_build
 
-            # הפחתת כמות ה-WIP הקיימת מהכמות שניתן לייצור (Y - Z)
             net_executable_qty = max(0.0, gross_executable - current_wip_qty)
 
             row_data[f"תכנית ייצור ({target_m})"] = raw_build
@@ -932,7 +945,7 @@ with tab2:
                 value_name="כמות"
             )
 
-            st.markdown("##### 📈 השוואת תוכנית ייצור, יכולת ביצוע בפועל ו-WIP לפי הרכבה ותיאור")
+            st.markdown("##### 📈 השוואת תוכנית ייצור (כולל מקדמי מערכת), יכולת ביצוע בפועל ו-WIP לפי הרכבה ותיאור")
             fig_bar_asm = px.bar(
                 chart_melted,
                 x="הרכבה ותיאור",
