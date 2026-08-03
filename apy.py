@@ -1,8 +1,8 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. איחוד פריטים ייחודיים ברמת המק"ט (Unique Item Level Netting) – פתרון מלא לניפוח השורות והצגת המספר האמיתי של הפריטים החסרים (כ-130 פריטים בטווח).
-2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמה 16 ו-4).
+1. לוגיקת OR חודשית מדויקת על עמודות ה-MRP בטווח (גירעון באוגוסט OR ספטמבר וכו').
+2. ניהול WIP מצטבר עם בדיקות היררכיות ומקדמי מערכת (כמו 16 ו-4).
 3. טבלת CTB מטריציונית וגרף הרכבות מפורט.
 
 הרצה:
@@ -549,7 +549,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ הספק: {e}")
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (Unique Item Level Netting across range)
+# CORE LOGIC FOR SHORTAGES (OR Condition Across MRP Columns DE..EB)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     if sim_extra_stock is None:
@@ -560,6 +560,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
+    # איסוף מדויק של עמודות ה-MRP שמתאימות לחודשים הנבחרים בטווח (DE עד EB וכו')
     target_month_cols_map = {}
     for m_c in MONTH_COLS:
         if pd.notnull(m_c):
@@ -572,31 +573,37 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
 
     temp_df = df.copy()
 
-    # לוגיקה מדויקת ברמת מק"ט ייחודי: בדיקת חוסר בכל חודש בנפרד מול המלאי הזמין,
-    # ולקיחת החוסר המקסימלי בטווח (או סימון חוסר אם קיים באחד החודשים בטווח).
+    # לוגיקת OR חודשית מול עמודות ה-MRP:
+    # לכל פריט, בודקים האם באחד החודשים בטווח הנבחר (עמודות MRP ספציפיות) הערך הוא שלילי.
+    # אם תנאי ה-OR מתקיים (שלילי בחודש א' OR שלילי בחודש ב'), הפריט מסומן כחסר,
+    # וכמות החוסר נקבעת כגירעון המרבי באותו טווח.
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
-        base_stk = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         sim_val = sim_extra_stock.get(pn, 0.0)
-        total_available_stock = base_stk + saved_stock_add + sim_val
+        total_added_stock = saved_stock_add + sim_val
 
         max_shortage_val = 0.0
-        is_short = False
+        is_short_or = False
 
         for ym in target_yms:
             col_name = target_month_cols_map.get(ym)
             if col_name and col_name in temp_df.columns:
-                monthly_demand = pd.to_numeric(row[col_name], errors='coerce') or 0
-                if monthly_demand > total_available_stock:
-                    is_short = True
-                    sh_qty = monthly_demand - total_available_stock
+                mrp_val = pd.to_numeric(row[col_name], errors='coerce') or 0
+                
+                # אם הערך בדוח ה-MRP עצמו הוא שלילי (או לאחר שילוב תוספת מלאי זמין אם נדרש)
+                # נבצע בדיקת OR: האם MRP < 0 באחד החודשים בטווח
+                effective_mrp_val = mrp_val + total_added_stock if mrp_val < 0 else mrp_val
+
+                if effective_mrp_val < 0:
+                    is_short_or = True
+                    sh_qty = abs(effective_mrp_val)
                     if sh_qty > max_shortage_val:
                         max_shortage_val = sh_qty
 
-        if is_short:
+        if is_short_or:
             shortage_records[idx] = max_shortage_val
 
     temp_df['Monthly_Balance'] = temp_df.index.map(lambda i: -shortage_records[i] if i in shortage_records else 1.0)
