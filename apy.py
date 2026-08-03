@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. קישורים ישירים לחיפוש מלאי במאוזר ובדיגיקי (Mouser / DigiKey) לפי מק"ט.
+1. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל טבלאות הניהול וה-ETA.
 2. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
 3. ניהול סגירת WIP והמרתו למלאי.
 4. סימולציות What-If, קובץ ספק חיצוני ותוכנית מרובת חודשים.
@@ -605,6 +605,10 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
         total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
 
+        mouser_link = f"https://www.mouser.co.il/c/?q={pn}"
+        digikey_link = f"https://www.digikey.com/en/products/result?keywords={pn}"
+        findchips_link = f"https://www.findchips.com/search/{pn}"
+
         added_for_this_pn = False
         for asm in filtered_assembly_cols:
             qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
@@ -618,14 +622,16 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
                     "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
-                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
+                    "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
                 })
 
         if not added_for_this_pn:
             breakdown_rows.append({
                 "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                 "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
-                "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+                "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
+                "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
             })
 
     res_df = pd.DataFrame(breakdown_rows)
@@ -739,10 +745,11 @@ with tab1:
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
 
-        st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא וקישורי חיפוש מלאي</div>', unsafe_allow_html=True)
         display_df = dash_df[[
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc",
-            "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage"
+            "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage",
+            "חיפוש במאוזר", "חיפוש בדיגיקי", "חיפוש ב-Findchips"
         ]].rename(columns={
             "PN": "מק'ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
             "Status": "סטטוס טיפול", "Assembly": "קוד הרכבה", "Assembly_Desc": "תיאור הרכבה",
@@ -765,7 +772,15 @@ with tab1:
         styled = sorted_display_df.style.map(
             lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]
         )
-        st.dataframe(styled, use_container_width=True)
+        st.dataframe(
+            styled,
+            column_config={
+                "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
+                "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
+                "חיפוש ב-Findchips": st.column_config.LinkColumn("🔗 Findchips", display_text="פתח ב-Findchips")
+            },
+            use_container_width=True
+        )
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1106,7 +1121,7 @@ with tab6:
                 st.rerun()
 
 with tab7:
-    st.markdown('<div class="section-title">📅 מעקב ETA, דחיות, כמויות וקישורים למפיצים (Mouser / DigiKey)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📅 מעקב ETA, דחיות, כמויות וקישורים למפיצים (Mouser / DigiKey / Findchips)</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
 
@@ -1141,6 +1156,7 @@ with tab7:
 
         mouser_link = f"https://www.mouser.co.il/c/?q={p_num}"
         digikey_link = f"https://www.digikey.com/en/products/result?keywords={p_num}"
+        findchips_link = f"https://www.findchips.com/search/{p_num}"
 
         eta_table_rows.append({
             "מק'ט": p_num,
@@ -1154,6 +1170,7 @@ with tab7:
             "ספק": saved_rec.get("supplier", "אופק"),
             "חיפוש במאוזר": mouser_link,
             "חיפוש בדיגיקי": digikey_link,
+            "חיפוש ב-Findchips": findchips_link,
             "הערות משתמש": saved_rec.get("comment", "")
         })
 
@@ -1178,7 +1195,8 @@ with tab7:
             filtered_eta_df,
             column_config={
                 "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
-                "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי")
+                "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
+                "חיפוש ב-Findchips": st.column_config.LinkColumn("🔗 Findchips", display_text="פתח ב-Findchips")
             },
             use_container_width=True,
             height=450
