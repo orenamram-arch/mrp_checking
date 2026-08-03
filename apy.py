@@ -1,12 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתקדמת ומלאה הכוללת:
-1. ניהול סגירת WIP אוטומטית בסוף חודש (המרת WIP למלאי זמין).
-2. הצגת WIP פעיל בדשבורד הראשי ובלשונית תוכנית הייצור.
-3. סינון חודשים מהחודש הנוכחי קדימה בלבד כברירת מחדל.
-4. ייבוא קובץ ETA / עדכון ספקים חיצוני (דריסה אוטומטית).
-5. כפתור Clear All למסננים בסיידבר.
-6. מבט תכנון מרובה חודשים לבחירה.
+גרסה מעודכנת הכוללת:
+1. איפוס מסננים מלא (Clear All).
+2. עמודת חודש ייצור בטבלת תוכנית מרובת חודשים.
+3. הצגת כמות לצד ה-ETA בלשונית מעקב ETA.
+4. ניהול סגירת WIP, מעקב ענן ותיקוני מחרוזות.
 
 הרצה:
 streamlit run mrp_app.py
@@ -425,15 +423,10 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 st.sidebar.header("🔍 מסננים מתקדמים")
 
 # Clear All button handling
-if "clear_filters" not in st.session_state:
-    st.session_state.clear_filters = False
-
 if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
-    st.session_state.clear_filters = True
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     st.rerun()
-
-if st.session_state.clear_filters:
-    st.session_state.clear_filters = False
 
 # Filter future months by default (from current month onwards)
 current_ym_str = datetime.now().strftime("%Y-%m")
@@ -543,7 +536,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
-    # Find columns corresponding to target_yms
     active_month_cols = []
     for m_c in MONTH_COLS:
         if pd.notnull(m_c):
@@ -640,7 +632,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
 
     return res_df
 
-# Calculate target months list based on slider
 all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
 start_idx = 0
 for idx, ym in enumerate(all_ym_list):
@@ -787,72 +778,74 @@ with tab2:
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
-    assemblies_to_check = [asm for asm in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0 or wip_cache_ctb.get(asm, 0) > 0]
-    assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
-
     production_capacity_rows = []
 
-    for asm_col in assemblies_to_check:
-        if selected_assembly != "הכל" and asm_col != selected_assembly:
-            continue
+    for target_m in selected_target_yms:
+        sub_plan_df = assembly_plan_df[assembly_plan_df["YearMonth"] == target_m]
+        assemblies_to_check = [asm for asm in valid_assemblies if (sub_plan_df[sub_plan_df["Assembly_PN"] == asm]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0 or wip_cache_ctb.get(asm, 0) > 0]
 
-        try:
-            asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
-        except:
-            asm_desc = ""
+        for asm_col in assemblies_to_check:
+            if selected_assembly != "הכל" and asm_col != selected_assembly:
+                continue
 
-        raw_build = assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
-        current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
-        planned_build = max(0.0, raw_build - current_wip_qty)
+            try:
+                asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
+            except:
+                asm_desc = ""
 
-        asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
+            raw_build = sub_plan_df[sub_plan_df["Assembly_PN"] == asm_col]["Build_Qty"].sum()
+            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
+            planned_build = max(0.0, raw_build - current_wip_qty)
 
-        missing_items_details = []
-        for _, s_row in asm_shortages.iterrows():
-            c_pn = str(s_row["PN"]).strip()
-            c_desc = str(s_row["Description"]).strip()
-            s_qty = s_row["Total_MRP_Shortage"]
+            asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
 
-            eta_display_str = get_first_supply_eta(c_pn, inv_cache_ctb)
+            missing_items_details = []
+            for _, s_row in asm_shortages.iterrows():
+                c_pn = str(s_row["PN"]).strip()
+                c_desc = str(s_row["Description"]).strip()
+                s_qty = s_row["Total_MRP_Shortage"]
 
-            if eta_display_str and eta_display_str != "בדיקה נדרשת":
-                try:
-                    eta_dt = pd.to_datetime(eta_display_str).date()
-                except:
+                eta_display_str = get_first_supply_eta(c_pn, inv_cache_ctb)
+
+                if eta_display_str and eta_display_str != "בדיקה נדרשת":
+                    try:
+                        eta_dt = pd.to_datetime(eta_display_str).date()
+                    except:
+                        eta_dt = date(2099, 12, 31)
+                else:
                     eta_dt = date(2099, 12, 31)
+
+                missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
+
+            if missing_items_details:
+                missing_items_details.sort(key=lambda x: x[3], reverse=True)
+                most_critical_pn = missing_items_details[0][0]
             else:
-                eta_dt = date(2099, 12, 31)
+                most_critical_pn = None
 
-            missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
+            formatted_missing = []
+            for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
+                eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
+                item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
 
-        if missing_items_details:
-            missing_items_details.sort(key=lambda x: x[3], reverse=True)
-            most_critical_pn = missing_items_details[0][0]
-        else:
-            most_critical_pn = None
+                if c_pn == most_critical_pn:
+                    formatted_missing.append(f"**{item_text}**")
+                else:
+                    formatted_missing.append(item_text)
 
-        formatted_missing = []
-        for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-            eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
-            item_text = f"{c_pn} ({c_desc[:12]}) - חסר: {m_qty:g}{eta_str}"
+            missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר את כל התוכנית."
+            max_buildable = 0 if formatted_missing else planned_build
 
-            if c_pn == most_critical_pn:
-                formatted_missing.append(f"**{item_text}**")
-            else:
-                formatted_missing.append(item_text)
-
-        missing_str = " | ".join(formatted_missing) if formatted_missing else "אין חוסרים! ניתן לייצר את כל התוכנית."
-        max_buildable = 0 if formatted_missing else planned_build
-
-        production_capacity_rows.append({
-            "קוד הרכבה": asm_col,
-            "תיאור הרכבה": asm_desc,
-            "רמה בעץ": assembly_levels.get(asm_col, 0),
-            "כמות נוכחית ב-WIP": current_wip_qty,
-            "תוכנית ייצור נטו": planned_build,
-            "ניתן לייצר בפועל (CTB)": max_buildable,
-            "רכיבים חסרים בלבד (הקריטי ב-BOLD)": missing_str
-        })
+            production_capacity_rows.append({
+                "חודש ייצור": target_m,
+                "קוד הרכבה": asm_col,
+                "תיאור הרכבה": asm_desc,
+                "רמה בעץ": assembly_levels.get(asm_col, 0),
+                "כמות נוכחית ב-WIP": current_wip_qty,
+                "תוכנית ייצור נטו": planned_build,
+                "ניתן לייצר בפועל (CTB)": max_buildable,
+                "רכיבים חסרים בלבד (הקריטי ב-BOLD)": missing_str
+            })
 
     if production_capacity_rows:
         cap_df = pd.DataFrame(production_capacity_rows)
@@ -926,7 +919,6 @@ with tab5:
 
     wip_current = fetch_wip_records()
 
-    # Section for closing active WIP at the end of the month
     if wip_current:
         st.markdown("##### 🏁 סגירת הרכבות שהיו ב-WIP (המרתן למלאי זמין)")
         with st.form("close_wip_form"):
@@ -938,7 +930,6 @@ with tab5:
                     closing_qty = wip_current[wip_to_close]
                     curr_stk, curr_eta, curr_stat, curr_sup, curr_comm, _, _ = get_inventory_record(wip_to_close)
                     
-                    # Save accumulated inventory to the assembly PN
                     save_inventory_record(
                         pn=wip_to_close,
                         added_stock=curr_stk + closing_qty,
@@ -949,7 +940,6 @@ with tab5:
                         updated_by="WIP Close Module",
                         webhook_url=webhook_url
                     )
-                    # Remove from WIP table
                     delete_wip_record(wip_to_close)
                     st.success(f"ההרכבה `{wip_to_close}` טופלה בהצלחה! ה-WIP אופס והכמות ({closing_qty}) נוספה למלאי ההרכבה.")
                     st.rerun()
@@ -1107,7 +1097,7 @@ with tab6:
                 st.rerun()
 
 with tab7:
-    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA ודחיות</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA, דחיות וכמויות</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
 
@@ -1121,6 +1111,7 @@ with tab7:
         orig_eta = get_base_mrp_eta(p_num)
         saved_rec = inv_cache_all.get(p_num, {})
         current_eta_raw = saved_rec.get("eta", "")
+        current_added_stock = saved_rec.get("added_stock", 0.0)
         
         if current_eta_raw and str(current_eta_raw).strip() not in ["", "None", "NaT", "nan"]:
             try:
@@ -1143,6 +1134,7 @@ with tab7:
             "סוג פריט": p_type,
             "ETA מקורי (MRP)": orig_eta,
             "ETA מעודכן (בפועל)": curr_eta_fmt,
+            "כמות מעודכנת (Added Stock)": current_added_stock,
             "סטטוס ספק/דחייה": note,
             "ספק": saved_rec.get("supplier", "אופק"),
             "הערות משתמש": saved_rec.get("comment", "")
