@@ -1,7 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מותאמת ומהירה: שליפת נתונים מרוכזת מ-Supabase (במקום פניות בודדות) למניעת איטיות.
-כולל ניהול ETA מדויק, דחיות ספקים (Delay Tracking) ולשונית מעקב ETA ייעודית.
+גרסה מתקדמת הכוללת:
+1. שליפת ETA מדויקת מה-MRP ללא סטייה.
+2. תאריך ושעה עדכניים בדשבורד הראשי.
+3. ניהול דחיות ספקים (Delay Tracking).
+4. לשונית WIP חדשה לגרוע ביקוש הרכבות שירדו לייצור (חישוב לפי QPA).
 
 הרצה:
 streamlit run mrp_app.py
@@ -246,6 +249,37 @@ def get_inventory_record(pn, cache=None):
         )
     return 0.0, "", "פתוח", "אופק", "", "", ""
 
+@st.cache_data(ttl=5)
+def fetch_wip_records():
+    """שולף את רשימת ההרכבות שנמצאות ב-WIP מהענן"""
+    try:
+        response = supabase.table("mrp_wip_assemblies").select("*").execute()
+        if response.data:
+            return {str(row.get("assembly_pn")).strip(): float(row.get("wip_qty", 0.0)) for row in response.data}
+    except:
+        pass
+    return {}
+
+def save_wip_record(assembly_pn, wip_qty):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    payload = {
+        "assembly_pn": str(assembly_pn),
+        "wip_qty": float(wip_qty),
+        "updated_at": now_str
+    }
+    try:
+        supabase.table("mrp_wip_assemblies").upsert(payload, on_conflict="assembly_pn").execute()
+        fetch_wip_records.clear()
+    except Exception as e:
+        st.error(f"שגיאה בשמירת WIP ל-Supabase: {e}")
+
+def delete_wip_record(assembly_pn):
+    try:
+        supabase.table("mrp_wip_assemblies").delete().eq("assembly_pn", str(assembly_pn)).execute()
+        fetch_wip_records.clear()
+    except Exception as e:
+        st.error(f"שגיאה במחיקת WIP מ-Supabase: {e}")
+
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     payload = {
@@ -356,7 +390,6 @@ for col in valid_assemblies:
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
 def get_base_mrp_eta(pn):
-    """שולף את ה-ETA המקורי ישירות מהעמודות של קובץ ה-MRP בדיוק לפי התאריך באקסל ללא סטייה"""
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
@@ -370,7 +403,6 @@ def get_base_mrp_eta(pn):
                     if q > 0:
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
-                            # המרה מדויקת שתואמת את ערך התאריך באקסל מבלי להוסיף חודש
                             if isinstance(date_val, datetime):
                                 return date_val.strftime("%Y-%m")
                             dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
@@ -381,7 +413,6 @@ def get_base_mrp_eta(pn):
     return "בדיקה נדרשת"
 
 def get_first_supply_eta(pn, inv_cache=None):
-    """מחזיר את ה-ETA הפעיל: מעודכן מהענן אם קיים, אחרת מקורי מדויק מה-MRP"""
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
@@ -448,17 +479,19 @@ search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "ה�
 
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (WRAPPED IN FUNCTION)
+# CORE LOGIC FOR SHORTAGES (INCLUDING WIP DEMAND REDUCTION)
 # ==========================================================
 def calculate_mrp_breakdown(sim_extra_stock=None):
     if sim_extra_stock is None:
         sim_extra_stock = {}
 
     inv_cache = fetch_all_inventory_records()
+    wip_cache = fetch_wip_records()
 
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
 
+    # התאמת יתרת המלאי עם תוספות ידניות
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -476,6 +509,11 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
 
     month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
     plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
+
+    # גזירת ביקוש הרכבות שנמצאות ב-WIP
+    for asm_wip, wip_qty in wip_cache.items():
+        if wip_qty > 0 and asm_wip in plan_dict:
+            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - wip_qty)
 
     breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
@@ -500,12 +538,13 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
                 required_demand = qty_per_asm * asm_build_qty
                 asm_desc = assembly_mapping.get(asm, asm)
 
-                breakdown_rows.append({
-                    "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
-                    "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
-                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
-                })
+                if asm_build_qty > 0:
+                    breakdown_rows.append({
+                        "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
+                        "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
+                        "Assembly_Monthly_Build": asm_build_qty, "Required_Demand": required_demand,
+                        "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+                    })
 
         if not matched_any and selected_assembly == "הכל" and selected_level == "הכל":
             breakdown_rows.append({
@@ -531,24 +570,33 @@ breakdown_df = calculate_mrp_breakdown()
 # ==========================================================
 # TABS
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
     "📌 לוח סטטוסים (Kanban)",
+    "🏭 ניהול WIP (בייצור)",
     "📅 עדכון מלאי וספקים",
     "📅 מעקב ETA ודחיות",
     "↩️ ניהול UNDO"
 ])
 
 with tab1:
-    st.markdown(f'<div class="section-title">🎯 תמונת מצב ניהולית לחודש: {selected_month_label}</div>', unsafe_allow_html=True)
+    # הצגת התאריך והשעה העכשווים בחלק העליון
+    current_time_str = datetime.now().strftime("%d/%m/%Y | %H:%M:%S")
+    st.markdown(f"""
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; opacity: 0.85; font-weight: 600;">
+        <div>🎯 תמונת מצב ניהולית לחודש: {selected_month_label}</div>
+        <div>🕒 תאריך ושעה עדכניים: {current_time_str}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     dash_df = breakdown_df.copy()
     if selected_assembly != "הכל":
         dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
 
-    total_planned_assemblies = len([a for a in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() > 0])
+    wip_cache_dash = fetch_wip_records()
+    total_planned_assemblies = len([a for a in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() - wip_cache_dash.get(a, 0)) > 0])
     blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
     ready_assemblies = max(0, total_planned_assemblies - blocked_assemblies)
     readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
@@ -703,8 +751,9 @@ with tab2:
     st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק (כולל דחיות ספקים מעודכנות) ומדגישה ב-**BOLD** את הפריט הקריטי.")
 
     inv_cache_ctb = fetch_all_inventory_records()
+    wip_cache_ctb = fetch_wip_records()
 
-    assemblies_to_check = [asm for asm in valid_assemblies if assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() > 0]
+    assemblies_to_check = [asm for asm in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm)]["Build_Qty"].sum() - wip_cache_ctb.get(asm, 0)) > 0]
     assemblies_to_check.sort(key=lambda x: assembly_levels.get(x, 0), reverse=True)
 
     production_capacity_rows = []
@@ -718,7 +767,9 @@ with tab2:
         except:
             asm_desc = ""
 
-        planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
+        raw_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
+        planned_build = max(0.0, raw_build - wip_cache_ctb.get(asm_col, 0))
+
         asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
 
         missing_items_details = []
@@ -787,7 +838,7 @@ with tab2:
 
 with tab3:
     st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
-    st.markdown("כלי אינטראקטיבי לבחינת תרחישים. **שימו לב: תוספת מלאי בלשונית זו מחושבת באופן רגעי ואינה נשמרת בבסיס הנתונים.**")
+    st.markdown("כלי אינטראקטיבי לבחינת תרחישים.")
 
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -813,49 +864,8 @@ with tab3:
             before_after_delta = (breakdown_df['Total_MRP_Shortage'].sum() if not breakdown_df.empty else 0) - (sim_df['Total_MRP_Shortage'].sum() if not sim_df.empty else 0)
             kpi_card("📉 צמצום גירעון כולל", f"{before_after_delta:,.0f}", "יחידות", "blue")
 
-        st.divider()
-        col_res1, col_res2 = st.columns(2)
-        with col_res1:
-            st.markdown("### 🟢 קווי הרכבה שישתחררו לייצור מלא:")
-            if freed_assemblies:
-                for asm in freed_assemblies:
-                    st.success(f"✔️ **{assembly_mapping.get(asm, asm)}** - מוכנה לייצור!")
-            else:
-                st.info("אין הרכבות שעוברות למוכנות מלאה בעקבות תוספת זו (יתכן שנדרשים פריטים נוספים).")
-
-        with col_res2:
-            st.markdown("### 🔴 צווארי בקבוק חלופיים שעדיין תוקעים הרכבות אלו:")
-            if not sim_df.empty:
-                related_asm = breakdown_df[breakdown_df["PN"] == sim_pn]["Assembly"].unique()
-                remaining = sim_df[sim_df["Assembly"].isin(related_asm)]
-                if not remaining.empty:
-                    for _, r in remaining.iterrows():
-                        st.warning(f"מק\"ט: `{r['PN']}` בהרכבה {r['Assembly']} - חסר: {r['Total_MRP_Shortage']:g}")
-                else:
-                    st.success("אין פריטים נוספים שתוקעים את ההרכבות הרלוונטיות!")
-            else:
-                st.success("הסימולציה שחררה את כלל הפריטים במערכת!")
-
-        if not breakdown_df.empty or not sim_df.empty:
-            st.markdown("##### ⚖️ השוואת גירעון: לפני מול אחרי הסימולציה")
-            comp_df = pd.DataFrame({
-                "מצב": ["לפני סימולציה", "אחרי סימולציה"],
-                "סך גירעון": [
-                    breakdown_df['Total_MRP_Shortage'].sum() if not breakdown_df.empty else 0,
-                    sim_df['Total_MRP_Shortage'].sum() if not sim_df.empty else 0
-                ]
-            })
-            fig_comp = px.bar(comp_df, x="מצב", y="סך גירעון", color="מצב",
-                             color_discrete_sequence=[DANGER, SUCCESS], text="סך גירעון")
-            fig_comp.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_comp.update_layout(template=PLOTLY_TEMPLATE, height=320, showlegend=False,
-                                   margin=dict(t=10, b=10, l=10, r=10))
-            st.plotly_chart(fig_comp, use_container_width=True)
-
 with tab4:
     st.markdown('<div class="section-title">📌 לוח מעקב סטטוסים (Kanban Pipeline)</div>', unsafe_allow_html=True)
-    st.markdown("מעקב ויזואלי אחר התקדמות הטיפול במק\"טים הגירעוניים מול ספקים ורכש.")
-
     statuses = [
         ("פתוח", "📝 פתוח לטיפול", "#3B1F1F", DANGER),
         ("הוזמן", "🛒 הוזמן / בטיפול רכש", "#3B2F1F", WARNING),
@@ -890,9 +900,45 @@ with tab4:
                 st.caption(f"+ עוד {count - 6} פריטים נוספים")
 
 with tab5:
-    st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
-    st.markdown("**הזנת נתונים בלשונית זו מאפשרת מתן דרגות חופש לעדכון מועדי הגעה (למשל דחייה שקיבלת מהספק) ושמירה קבועה בענן.**")
+    st.markdown(f'<div class="section-title">🏭 ניהול WIP (הרכבות שכבר ירדו לייצור בחודש {selected_month_label})</div>', unsafe_allow_html=True)
+    st.markdown("כאן תוطيع להזין אילו הרכבות כבר ירדו לייצור בפועל. המערכת תגרע אוטומטית את הביקוש של הרכיבים שלהן בהתאם ל-QPA.")
 
+    wip_current = fetch_wip_records()
+
+    with st.form("wip_form"):
+        wip_asm_choice = st.selectbox("בחר הרכבה שירדה לייצור", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
+        current_wip_val = wip_current.get(wip_asm_choice, 0.0)
+        wip_qty_input = st.number_input("כמות יחידות הרכבה שכבר ב-WIP", min_value=0.0, value=float(current_wip_val), step=1.0)
+
+        if st.form_submit_button("שמור הגדרת WIP בענן"):
+            save_wip_record(wip_asm_choice, wip_qty_input)
+            st.success(f"ה-WIP עבור הרכבה {wip_asm_choice} עודכן בהצלחה והביקוש נגרע מהחישובים!")
+            st.rerun()
+
+    st.markdown("##### 📋 רשימת ההרכבות הפעילות ב-WIP כרגע:")
+    if wip_current:
+        wip_display_rows = []
+        for asm_k, qty_v in wip_current.items():
+            if qty_v > 0:
+                wip_display_rows.append({
+                    "קוד הרכבה": asm_k,
+                    "תיאור הרכבה": assembly_mapping.get(asm_k, ""),
+                    "כמות ב-WIP": qty_v
+                })
+        if wip_display_rows:
+            st.dataframe(pd.DataFrame(wip_display_rows), use_container_width=True)
+            if st.button("🗑️ איפוס כל ה-WIP"):
+                for asm_k in list(wip_current.keys()):
+                    delete_wip_record(asm_k)
+                st.success("כל נתוני ה-WIP אופסו.")
+                st.rerun()
+        else:
+            st.info("אין כרגע הרכבות פעילות ב-WIP.")
+    else:
+            st.info("אין כרגע הרכבות פעילות ב-WIP.")
+
+with tab6:
+    st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק\"ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()), key="update_pn_select")
 
     if selected_pn != "הכל":
@@ -929,10 +975,8 @@ with tab5:
                 st.success(f"העדכון למק\"ט {selected_pn} נשמר בהצלחה בענן!")
                 st.rerun()
 
-with tab6:
+with tab7:
     st.markdown('<div class="section-title">📅 רשימת כל הפריטים ומעקב ETA ודחיות</div>', unsafe_allow_html=True)
-    st.markdown("טבלה מרכזת המציגה את כל הפריטים, מועדי ה-ETA המקוריים מה-MRP, ה-ETA המעודכן (בעקבות דחיית ספק), והערה אוטומטית על שינויים.")
-
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
 
@@ -944,7 +988,6 @@ with tab6:
         p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
 
         orig_eta = get_base_mrp_eta(p_num)
-        
         saved_rec = inv_cache_all.get(p_num, {})
         current_eta_raw = saved_rec.get("eta", "")
         
@@ -975,7 +1018,6 @@ with tab6:
         })
 
     eta_df = pd.DataFrame(eta_table_rows)
-    
     if not eta_df.empty:
         col_s1, col_s2 = st.columns(2)
         with col_s1:
@@ -994,21 +1036,7 @@ with tab6:
 
         st.dataframe(filtered_eta_df, use_container_width=True, height=450)
 
-        output_eta = io.BytesIO()
-        with pd.ExcelWriter(output_eta, engine='openpyxl') as writer:
-            filtered_eta_df.to_excel(writer, index=False, sheet_name='ETA_Tracking_Report')
-        processed_eta_data = output_eta.getvalue()
-
-        st.download_button(
-            label="📥 הורד דו\"ח מעקב ETA ודחיות ל-Excel",
-            data=processed_eta_data,
-            file_name=f"MRP_ETA_Tracking_Report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.info("לא נמצאו נתוני ETA להצגה.")
-
-with tab7:
+with tab8:
     st.markdown('<div class="section-title">↩️ חזרה לאחור וניהול היסטוריה (UNDO)</div>', unsafe_allow_html=True)
     try:
         response = supabase.table("mrp_inventory_updates").select("*").order("updated_at", desc=True).execute()
