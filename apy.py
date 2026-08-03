@@ -1,10 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. כרטיס KPI אינטראקטיבי בטאב 1 המאפשר לפתוח ולהציג את רשימת כרטיסי ההרכבות הפעילים ב-WIP בלחיצה.
-2. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-3. תבניות Excel (Templates) להורדה ישירה ותמיכה בעדכון ETA וכמות.
-4. טבלת CTB מטריציונית וגרף הרכבות מפורט.
+1. מד מוכנות ייצור משוקלל המחושב לפי יכולת ייצור חלקי (Partial Readiness) מתוך טבלת ה-CTB.
+2. כרטיס KPI אינטראקטיבי בטאב 1 המאפשר להציג את רשימת כרטיסי ההרכבות הפעילים ב-WIP בלחיצה.
+3. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
+4. תבניות Excel (Templates) להורדה ישירה ותמיכה בעדכון ETA וכמות.
 
 הרצה:
 streamlit run mrp_app.py
@@ -776,10 +776,52 @@ with tab1:
         dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
 
     wip_cache_dash = fetch_wip_records()
-    total_planned_assemblies = len([a for a in valid_assemblies if (assembly_plan_df[(assembly_plan_df["YearMonth"].isin(selected_target_yms)) & (assembly_plan_df["Assembly_PN"] == a)]["Build_Qty"].sum() - wip_cache_dash.get(a, 0)) > 0])
+    inv_cache_dash = fetch_all_inventory_records()
+
+    # חישוב אחוז מוכנות ייצור חלקי (Partial Readiness) מתוך תוכנית ה-CTB
+    total_planned_qty = 0.0
+    total_executable_qty = 0.0
+    total_planned_assemblies_count = 0
     blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
-    ready_assemblies = max(0, total_planned_assemblies - blocked_assemblies)
-    readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
+
+    assemblies_to_evaluate = [a for a in valid_assemblies if selected_assembly == "הכל" or a == selected_assembly]
+
+    for asm_col in assemblies_to_evaluate:
+        for target_m in selected_target_yms:
+            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
+            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
+            current_wip_qty = wip_cache_dash.get(asm_col, 0.0)
+
+            if raw_build > 0 or current_wip_qty > 0:
+                total_planned_assemblies_count += 1
+                total_planned_qty += raw_build
+
+                month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
+                asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
+
+                max_possible_build = raw_build
+                if not asm_shortages.empty and raw_build > 0:
+                    for _, s_row in asm_shortages.iterrows():
+                        req_per = s_row["Qty_Per_Assembly"]
+                        if req_per > 0:
+                            comp_pn = str(s_row["PN"]).strip()
+                            comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
+                            if not comp_match.empty:
+                                c_row = comp_match.iloc[0]
+                                base_stk = pd.to_numeric(c_row.get(STOCK_COL, 0), errors='coerce') or 0
+                                saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_dash)
+                                total_comp_stock = base_stk + saved_stk
+                                possible_from_this = total_comp_stock / req_per
+                                max_possible_build = min(max_possible_build, possible_from_this)
+                    gross_executable = max(0.0, min(raw_build, max_possible_build))
+                else:
+                    gross_executable = raw_build
+
+                net_executable_qty = max(0.0, gross_executable - current_wip_qty)
+                total_executable_qty += net_executable_qty
+
+    readiness_pct = (total_executable_qty / total_planned_qty * 100) if total_planned_qty > 0 else 100
+    ready_assemblies = max(0, total_planned_assemblies_count - blocked_assemblies)
 
     unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
     active_wip_list = [(w, q) for w, q in wip_cache_dash.items() if q > 0]
@@ -787,7 +829,7 @@ with tab1:
 
     col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
     with col_k1:
-        kpi_card("🟢 מוכנות קווי ייצור", f"{readiness_pct:.1f}%", f"{ready_assemblies}/{total_planned_assemblies} הרכבות מוכנות", "green")
+        kpi_card("🟢 מוכנות ייצור משוקללת", f"{readiness_pct:.1f}%", f"{total_executable_qty:,.0f} / {total_planned_qty:,.0f} יחידות ניתן לייצור", "green")
     with col_k2:
         kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בטווח הנבחר", "red")
     with col_k3:
@@ -797,7 +839,6 @@ with tab1:
     with col_k5:
         kpi_card("📊 גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
 
-    # פתיחת מסך / Expander אינטראקטיבי להצגת כרטיסי ה-WIP בלחיצה
     with st.expander("🔍 הצג פירוט כרטיסי הרכבות פעילים ב-WIP (לחץ לפתיחה)", expanded=False):
         if active_wip_list:
             wip_detail_rows = []
