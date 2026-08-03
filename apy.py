@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מותאמת ומהירה: שליפת נתונים מרוכזת מ-Supabase (במקום פניות בודדות) למניעת איטיות.
-גרסה 2 — עיצוב משודרג, גרפים נוספים, KPI-cards מעוצבים.
+גרסה 2 — עיצוב משודרג, גרפים נוספים, KPI-cards מעוצבים והתאמה אוטומטית למצב בהיר/כהה במכשיר.
 
 הרצה:
 streamlit run mrp_app.py
@@ -29,7 +29,7 @@ st.set_page_config(
 )
 
 # ==========================================================
-# GLOBAL THEME / CSS
+# GLOBAL THEME / CSS (AUTO LIGHT/DARK MODE SUPPORT)
 # ==========================================================
 PRIMARY = "#4F46E5"      # indigo
 PRIMARY_DARK = "#3730A3"
@@ -37,15 +37,12 @@ ACCENT = "#06B6D4"       # cyan
 DANGER = "#EF4444"
 WARNING = "#F59E0B"
 SUCCESS = "#10B981"
-BG_CARD = "#161B2E"
 
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap');
 
-/* חשוב: ה-RTL מוגבל לתוכן הראשי בלבד (ולא לכל ה-DOM כולל ה-sidebar החיצוני),
-    כי הפעלת direction:rtl על הקונטיינר החיצוני של הסיידבר שוברת את אנימציית
-    ה-slide (transform) שלו במובייל וגורמת לו "להיתקע" באמצע המסך. */
+/* הגדרת RTL לתוכן הראשי ולסיידבר */
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stSidebarContent"] {{
     font-family: 'Assistant', sans-serif;
@@ -56,11 +53,11 @@ st.markdown(f"""
     font-family: 'Assistant', sans-serif;
 }}
 
-/* Hide default streamlit chrome a bit */
+/* Hide default streamlit chrome */
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 
-/* Header banner - צבעי גרדיאנט קבועים, טקסט לבן קריא תמיד בכל תמה */
+/* Header banner - צבעי גרדיאנט קבועים שיישארו בולטים ויפים בכל תמה */
 .hero-banner {{
     background: linear-gradient(120deg, {PRIMARY} 0%, {PRIMARY_DARK} 45%, {ACCENT} 100%);
     padding: 28px 32px;
@@ -80,16 +77,15 @@ footer {{visibility: hidden;}}
     margin-top: 6px;
 }}
 
-/* KPI cards - משתמשים במשתני התמה של Streamlit, כך שהצבעים מתאימים אוטומטית
-    לטתמה הבהירה/כהה שהמשתמש בוחר (כולל "Auto" לפי המערכת) */
+/* KPI cards - התאמה אוטומטית למצב בהיר וכהה לפי העדפת המכשיר/דפדפן */
 .kpi-card {{
-    background: var(--secondary-background-color, #161B2E);
-    color: var(--text-color, inherit);
+    background-color: var(--secondary-background-color);
+    color: var(--text-color);
     border: 1px solid rgba(128,128,128,0.25);
     border-radius: 14px;
     padding: 18px 16px;
     text-align: center;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.1);
     transition: transform 0.15s ease;
 }}
 .kpi-card:hover {{ transform: translateY(-3px); }}
@@ -114,6 +110,23 @@ footer {{visibility: hidden;}}
 .kpi-orange {{ border-top: 4px solid {WARNING}; }}
 .kpi-blue {{ border-top: 4px solid {ACCENT}; }}
 
+/* מניעת מסך שחור במובייל: גיבוי למקרה שהמשתמש נמצא במצב בהיר במכשיר אך הדפדפן כופה רקע */
+@media (prefers-color-scheme: light) {{
+    .kpi-card, .kanban-card {{
+        background-color: #ffffff !important;
+        color: #111827 !important;
+        border-color: #e5e7eb !important;
+    }}
+}}
+
+@media (prefers-color-scheme: dark) {{
+    .kpi-card, .kanban-card {{
+        background-color: #1f2937 !important;
+        color: #f9fafb !important;
+        border-color: #374151 !important;
+    }}
+}}
+
 /* Section titles */
 .section-title {{
     font-weight: 800;
@@ -134,8 +147,6 @@ footer {{visibility: hidden;}}
     text-align: center;
 }}
 .kanban-card {{
-    background: var(--secondary-background-color, #161B2E);
-    color: var(--text-color, inherit);
     border: 1px solid rgba(128,128,128,0.2);
     border-radius: 10px;
     padding: 10px 12px;
@@ -192,6 +203,8 @@ try:
     _theme_base = st.get_option("theme.base")
 except Exception:
     _theme_base = None
+
+# התאמה אוטומטית גם לגרפים של Plotly לפי התמה של המערכת/מכשיר
 PLOTLY_TEMPLATE = "plotly_white" if _theme_base == "light" else "plotly_dark"
 COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#34D399"]
 
@@ -207,9 +220,8 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
-@st.cache_data(ttl=5) # שומר את הנתונים בזיכרון המטמון ל-5 שניות כדי למנוע קריאות מיותרות לענן
+@st.cache_data(ttl=5)
 def fetch_all_inventory_records():
-    """שולף את כל הטבלה מהענן בפעימה אחת כדי שהאפליקציה תרוץ במהירות מקסימלית"""
     try:
         response = supabase.table("mrp_inventory_updates").select("*").execute()
         records = {}
@@ -234,7 +246,6 @@ def fetch_all_inventory_records():
         return {}
 
 def get_inventory_record(pn, cache=None):
-    """שולף רשומה. אם מועבר cache מקומי (מילון), משתמש בו כדי למנוע קריאה חוזרת ללא צורך."""
     all_recs = cache if cache is not None else fetch_all_inventory_records()
     res = all_recs.get(str(pn).strip())
     if res:
@@ -264,7 +275,6 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
     try:
         supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
         supabase.table("mrp_inventory_history").insert(payload).execute()
-        # ניקוי ה-Cache כדי שהנתונים החדשים יופיעו מיד
         fetch_all_inventory_records.clear()
     except Exception as e:
         st.error(f"שגיאה בשמירה ל-Supabase: {e}")
@@ -452,7 +462,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     if sim_extra_stock is None:
         sim_extra_stock = {}
 
-    inv_cache = fetch_all_inventory_records()  # שליפה יחידה, נשמרת בזיכרון לכל אורך הפונקציה
+    inv_cache = fetch_all_inventory_records()
 
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
@@ -563,7 +573,6 @@ with tab1:
     st.divider()
 
     if not dash_df.empty and len(dash_df) > 0:
-        # ---- Row 1: Gauge + Pie ----
         col_g0, col_g1, col_g2 = st.columns([1, 1.2, 1.2])
 
         with col_g0:
@@ -599,7 +608,6 @@ with tab1:
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
 
-        # ---- Row 2: Top 10 bar + Trend line ----
         col_g3, col_g4 = st.columns(2)
 
         with col_g3:
@@ -646,7 +654,6 @@ with tab1:
                 fig_line.update_layout(template=PLOTLY_TEMPLATE, height=380, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_line, use_container_width=True)
 
-        # ---- Row 3: Status funnel ----
         st.markdown("##### 🔻 פילוח סטטוס טיפול בפריטים חסרים")
         status_counts = dash_df.drop_duplicates(subset=["PN"])["Status"].value_counts().reset_index()
         status_counts.columns = ["Status", "Count"]
@@ -668,7 +675,6 @@ with tab1:
         })
 
         def _shortage_color(val, vmax):
-            """צביעה ידנית (בלי תלות ב-matplotlib) - ככל שהחוסר גדול יותר, האדום כהה יותר."""
             if vmax <= 0:
                 return ""
             ratio = min(1.0, float(val) / vmax)
@@ -680,7 +686,6 @@ with tab1:
         sorted_display_df = display_df.sort_values(by="סך חוסר", ascending=False)
         max_shortage = sorted_display_df["סך חוסר"].max() if not sorted_display_df.empty else 0
 
-        # שימוש ב- .map במקום .applymap כדי למנוע אזהרות ושגיאות תאימות בגרסאות Pandas חדשות
         styled = sorted_display_df.style.map(
             lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]
         )
@@ -721,7 +726,6 @@ with tab2:
             asm_desc = ""
 
         planned_build = assembly_plan_df[(assembly_plan_df["YearMonth"] == selected_ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]["Build_Qty"].sum()
-
         asm_shortages = breakdown_df[breakdown_df["Assembly"] == asm_col] if not breakdown_df.empty else pd.DataFrame()
 
         missing_items_details = []
@@ -839,7 +843,6 @@ with tab3:
             else:
                 st.success("הסימולציה שחררה את כלל הפריטים במערכת!")
 
-        # Before/After comparison chart
         if not breakdown_df.empty or not sim_df.empty:
             st.markdown("##### ⚖️ השוואת גירעון: לפני מול אחרי הסימולציה")
             comp_df = pd.DataFrame({
