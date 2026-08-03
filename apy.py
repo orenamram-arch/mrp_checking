@@ -1,9 +1,10 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתקדמת ומדויקת:
-1. תיקון ETA (הורדת חודש אחד להתאמה מדויקת לדוח ה-MRP).
+גרסה מדויקת לחלוטין:
+1. תיקון ETA (הורדת חודש מדויק לדוח).
 2. שעון ישראל מעודכן.
-3. ניהול דחיות ספקים ו-WIP.
+3. ספירת חוסרים מדויקת לפי מק"טים ייחודיים (כולל עדכון 75->76 בעקבות דחייה).
+4. ניהול WIP ודחיות ספקים.
 
 הרצה:
 streamlit run mrp_app.py
@@ -398,7 +399,6 @@ def get_base_mrp_eta(pn):
                         date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
                         if pd.notnull(date_val):
                             if isinstance(date_val, datetime):
-                                # הורדת חודש אחד בדיוק להתאמה מלאה למציאות
                                 corrected_dt = date_val - pd.DateOffset(months=1)
                                 return corrected_dt.strftime("%Y-%m")
                             dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
@@ -500,6 +500,23 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
             if current_bal < 0:
                 temp_df.at[idx, 'Monthly_Balance'] = current_bal + total_added_stock
 
+    # בחינת פריטים שנדחו או שאינם זמינים בחודש הנבחר (כולל בדיקת ETA מאוחר יותר מחודש התוכנית)
+    # פריט שנדחה לחודש מאחר יותר נחשב כגירעוני וחסר לתאריך היעד
+    mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
+
+    # בדיקה האם יש פריטים שקיבלו ETA מעודכן (דחיית ספק) לחודש מאחר יותר מחודש הביקורת
+    for idx, row in temp_df.iterrows():
+        pn = str(row[PN_COL]).strip()
+        _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+        if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
+            try:
+                eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
+                if eta_ym > selected_ym and temp_df.at[idx, 'Monthly_Balance'] >= 0:
+                    # אם הפריט היה מאוזן אבל ה-ETA שלו נדחה אחרי חודש הייצור - הוא הופך לחסר!
+                    temp_df.at[idx, 'Monthly_Balance'] = -1.0 # מכניס לגירעון
+            except:
+                pass
+
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
@@ -596,13 +613,15 @@ with tab1:
     ready_assemblies = max(0, total_planned_assemblies - blocked_assemblies)
     readiness_pct = (ready_assemblies / total_planned_assemblies * 100) if total_planned_assemblies > 0 else 100
 
+    unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
+
     col_k1, col_k2, col_k3, col_k4 = st.columns(4)
     with col_k1:
         kpi_card("🟢 מוכנות קווי ייצור", f"{readiness_pct:.1f}%", f"{ready_assemblies}/{total_planned_assemblies} הרכבות מוכנות", "green")
     with col_k2:
         kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בחודש הנבחר", "red")
     with col_k3:
-        kpi_card("📦 מק\"טים בגירעון", len(dash_df['PN'].unique()) if not dash_df.empty else 0, "פריטים ייחודיים", "orange")
+        kpi_card("📦 מק\"טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange")
     with col_k4:
         kpi_card("📊 כמות גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
 
@@ -743,8 +762,6 @@ with tab1:
 
 with tab2:
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}</div>', unsafe_allow_html=True)
-    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק ומדגישה ב-**BOLD** את הפריט הקריטי.")
-
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
 
@@ -815,7 +832,6 @@ with tab2:
 
     if production_capacity_rows:
         cap_df = pd.DataFrame(production_capacity_rows)
-
         col_c1, col_c2 = st.columns([1, 1.4])
         with col_c1:
             st.markdown("##### 🚦 מוכנות הרכבות (CTB מול תוכנית)")
@@ -841,7 +857,6 @@ with tab3:
 
     if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
         sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock})
-
         orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
         sim_blocked = set(sim_df['Assembly'].unique()) if not sim_df.empty else set()
         freed_assemblies = orig_blocked - sim_blocked
@@ -894,8 +909,6 @@ with tab4:
 
 with tab5:
     st.markdown(f'<div class="section-title">🏭 ניהול WIP (הרכבות שכבר ירדו לייצור בחודש {selected_month_label})</div>', unsafe_allow_html=True)
-    st.markdown("כאן תוכל להזין אילו הרכבות כבר ירדו לייצור בפועל. המערכת תגרע אוטומטית את הביקוש של הרכיבים שלהן בהתאם ל-QPA.")
-
     wip_current = fetch_wip_records()
 
     with st.form("wip_form"):
