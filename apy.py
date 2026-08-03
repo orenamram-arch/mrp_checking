@@ -749,7 +749,6 @@ with tab1:
     st.divider()
 
     if not dash_df.empty and len(dash_df) > 0:
-        # ROW 1 OF CHARTS: Gauge, Pies
         col_g0, col_g1, col_g2 = st.columns([1, 1.2, 1.2])
         with col_g0:
             st.markdown("##### 🎯 מד מוכנות ייצור")
@@ -776,7 +775,6 @@ with tab1:
             fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_sup, use_container_width=True)
             
-        # ROW 2 OF CHARTS: Treemap and Top 10
         st.divider()
         col_c1, col_c2 = st.columns([1.5, 1])
         
@@ -804,7 +802,6 @@ with tab1:
             fig_bar_top.update_traces(textposition='inside')
             st.plotly_chart(fig_bar_top, use_container_width=True)
 
-        # ROW 3 OF CHARTS: Sunburst & Bubble Scatter
         st.divider()
         col_n1, col_n2 = st.columns([1.2, 1.2])
         
@@ -994,11 +991,11 @@ with tab2:
         
         st.dataframe(matrix_df, column_config=column_conf, use_container_width=True, height=420)
 
-        # RADAR CHART FOR CTB READINESS (Fixed with numerical coercion)
+        # POLAR BAR CHART FOR CTB READINESS (Robust & Error-Free)
         st.divider()
         col_r1, col_r2 = st.columns([1, 1])
         with col_r1:
-            st.markdown("##### 🕸️ מפת מכ'ם רמת מוכנות הרכבות (Radar Chart)")
+            st.markdown("##### 🕸️ מפת רדאר מוכנות הרכבות (Polar Chart)")
             radar_target_m = selected_target_yms[0]
             radar_col_name = f"% מוכנות ({radar_target_m})"
             if radar_col_name in matrix_df.columns:
@@ -1006,20 +1003,18 @@ with tab2:
                 radar_df['Short_Label'] = radar_df['קוד הרכבה'].astype(str) + " (" + radar_df['רמה בעץ'].astype(str) + ")"
                 radar_df[radar_col_name] = pd.to_numeric(radar_df[radar_col_name], errors='coerce').fillna(0)
                 
-                fig_radar = px.line_polar(
+                fig_polar = px.bar_polar(
                     radar_df, 
                     r=radar_col_name, 
                     theta='Short_Label', 
-                    line_close=True, 
-                    markers=True, 
-                    fill='toself', 
-                    range_r=[0, 100], 
-                    color_discrete_sequence=[ACCENT]
+                    color=radar_col_name, 
+                    color_continuous_scale="Teal",
+                    range_r=[0, 100]
                 )
-                fig_radar.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=30, b=30, l=30, r=30))
-                st.plotly_chart(fig_radar, use_container_width=True)
+                fig_polar.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=30, b=30, l=30, r=30))
+                st.plotly_chart(fig_polar, use_container_width=True)
             else:
-                st.info("אין נתוני מוכנות לחודש הנבחר להצגת תרשים רדאר.")
+                st.info("אין נתוני מוכנות לחודש הנבחר להצגת התרשים הפולארי.")
 
         with col_r2:
             if chart_assembly_data:
