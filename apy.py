@@ -1002,12 +1002,11 @@ with tab2:
         st.divider()
         col_r1, col_r2 = st.columns([1, 1])
         with col_r1:
-            st.markdown("##### 🕸️ מפת מכ"ם רמת מוכנות הרכבות (Radar Chart)")
+            st.markdown("##### 🕸️ מפת מכ'ם רמת מוכנות הרכבות (Radar Chart)")
             radar_target_m = selected_target_yms[0]
             radar_col_name = f"% מוכנות ({radar_target_m})"
             if radar_col_name in matrix_df.columns:
                 radar_df = matrix_df.copy()
-                # Create a shorter label for the radar chart to look clean
                 radar_df['Short_Label'] = radar_df['קוד הרכבה'].astype(str) + " (" + radar_df['רמה בעץ'].astype(str) + ")"
                 fig_radar = px.line_polar(radar_df, r=radar_col_name, theta='Short_Label', line_close=True, 
                                           markers=True, fill='toself', range_r=[0,100], 
@@ -1074,7 +1073,6 @@ with tab4:
     total_items = len(dedup_all) if not dedup_all.empty else 0
 
     if total_items > 0:
-        # Funnel chart to visualize the flow
         status_counts = dedup_all["Status"].value_counts().to_dict()
         funnel_data = {"Status": [s[0] for s in statuses], "Count": [status_counts.get(s[0], 0) for s in statuses]}
         fig_funnel = px.funnel(funnel_data, x='Count', y='Status', color='Status', color_discrete_sequence=[DANGER, WARNING, ACCENT, SUCCESS])
