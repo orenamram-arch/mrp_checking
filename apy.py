@@ -2,7 +2,7 @@
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מתקדמת הכוללת:
 1. שליפת ETA מדויקת מה-MRP ללא סטייה.
-2. תאריך ושעה עדכניים בדשבורד הראשי.
+2. הצגת שעון ישראל מעודכן (כולל תיקון אזור זמן).
 3. ניהול דחיות ספקים (Delay Tracking).
 4. לשונית WIP חדשה לגרוע ביקוש הרכבות שירדו לייצור (חישוב לפי QPA).
 
@@ -14,7 +14,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import io
 import requests
 import json
@@ -251,7 +251,6 @@ def get_inventory_record(pn, cache=None):
 
 @st.cache_data(ttl=5)
 def fetch_wip_records():
-    """שולף את רשימת ההרכבות שנמצאות ב-WIP מהענן"""
     try:
         response = supabase.table("mrp_wip_assemblies").select("*").execute()
         if response.data:
@@ -261,7 +260,7 @@ def fetch_wip_records():
     return {}
 
 def save_wip_record(assembly_pn, wip_qty):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     payload = {
         "assembly_pn": str(assembly_pn),
         "wip_qty": float(wip_qty),
@@ -281,7 +280,7 @@ def delete_wip_record(assembly_pn):
         st.error(f"שגיאה במחיקת WIP מ-Supabase: {e}")
 
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     payload = {
         "pn": str(pn),
         "added_stock": float(added_stock),
@@ -491,7 +490,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     temp_df = df.copy()
     temp_df['Monthly_Balance'] = pd.to_numeric(temp_df[selected_month_col], errors='coerce').fillna(0)
 
-    # התאמת יתרת המלאי עם תוספות ידניות
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
         saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -510,7 +508,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None):
     month_plan = assembly_plan_df[assembly_plan_df["YearMonth"] == selected_ym]
     plan_dict = month_plan.set_index("Assembly_PN")["Build_Qty"].to_dict()
 
-    # גזירת ביקוש הרכבות שנמצאות ב-WIP
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
             plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - wip_qty)
@@ -582,12 +579,13 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 ])
 
 with tab1:
-    # הצגת התאריך והשעה העכשווים בחלק העליון
-    current_time_str = datetime.now().strftime("%d/%m/%Y | %H:%M:%S")
+    # הצגת התאריך והשעה העכשווים (שעון ישראל = שרת UTC + 3 שעות)
+    israel_time = datetime.utcnow() + timedelta(hours=3)
+    current_time_str = israel_time.strftime("%d/%m/%Y | %H:%M:%S")
     st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; opacity: 0.85; font-weight: 600;">
         <div>🎯 תמונת מצב ניהולית לחודש: {selected_month_label}</div>
-        <div>🕒 תאריך ושעה עדכניים: {current_time_str}</div>
+        <div>🕒 שעון ישראל (עדכני): {current_time_str}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -748,7 +746,7 @@ with tab1:
 
 with tab2:
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) לחודש: {selected_month_label}</div>', unsafe_allow_html=True)
-    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק (כולל דחיות ספקים מעודכנות) ומדגישה ב-**BOLD** את הפריט הקריטי.")
+    st.markdown("המערכת מציגה את מועד ה-ETA האמיתי והמדויק ומדגישה ב-**BOLD** את הפריט הקריטי.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
@@ -838,8 +836,6 @@ with tab2:
 
 with tab3:
     st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
-    st.markdown("כלי אינטראקטיבי לבחינת תרחישים.")
-
     col_w1, col_w2 = st.columns(2)
     with col_w1:
         sim_pn = st.selectbox("בחר מק\"ט לסימולציה", sorted(df[PN_COL].dropna().astype(str).unique()), key="sim_pn")
@@ -901,7 +897,7 @@ with tab4:
 
 with tab5:
     st.markdown(f'<div class="section-title">🏭 ניהול WIP (הרכבות שכבר ירדו לייצור בחודש {selected_month_label})</div>', unsafe_allow_html=True)
-    st.markdown("כאן תוطيع להזין אילו הרכבות כבר ירדו לייצור בפועל. המערכת תגרע אוטומטית את הביקוש של הרכיבים שלהן בהתאם ל-QPA.")
+    st.markdown("כאן תוכל להזין אילו הרכבות כבר ירדו לייצור בפועל. המערכת תגרע אוטומטית את הביקוש של הרכיבים שלהן בהתאם ל-QPA.")
 
     wip_current = fetch_wip_records()
 
@@ -935,7 +931,7 @@ with tab5:
         else:
             st.info("אין כרגע הרכבות פעילות ב-WIP.")
     else:
-            st.info("אין כרגע הרכבות פעילות ב-WIP.")
+        st.info("אין כרגע הרכבות פעילות ב-WIP.")
 
 with tab6:
     st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
