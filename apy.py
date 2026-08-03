@@ -1,7 +1,7 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. טבלת CTB מטריציונית עם הפרדת עמודות לתוכנית ייצור חודשית, WIP חודשי וחוסרים.
+1. טבלת CTB מטריציונית עם הפרדת עמודות וריכוז עמודות הכמויות וה-WIP בהתחלה ועמודות הסטטוס והחוסרים בסוף.
 2. קישורים ישירים לחיפוש מלאי (Mouser, DigiKey, Findchips) בכל הטבלאות.
 3. איפוס מסננים ויזואלי מלא בסיידבר (Clear All).
 4. ניהול סגירת WIP והמרתו למלאי, סימולציות What-If ותוכנית מרובת חודשים.
@@ -797,8 +797,8 @@ with tab1:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם הפרדת עמודות תוכנית, WIP וחוסרים חודשיים</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה, כאשר עבור כל חודש בטווח הנבחר מוצגות עמודות ייעודיות נפרדות: **כמות התוכנית**, **כמות ה-WIP** ו**סטטוס החוסרים והרכיבים הקריטיים**.")
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית (עמודות כמויות בהתחלה, סטטוס וחוסרים בסוף)</div>', unsafe_allow_html=True)
+    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. כל עמודות התוכנית וה-WIP מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים מרוכזות בסוף הטבלה.")
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
@@ -820,6 +820,7 @@ with tab2:
 
         has_any_build = False
 
+        # שלב 1: איסוף וריכוז עמודות הכמויות וה-WIP תחילה
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
             raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
@@ -829,11 +830,16 @@ with tab2:
             if raw_build > 0 or current_wip_qty > 0:
                 has_any_build = True
 
-            # הכנסת נתונים לעמודות הנפרדות לחודש נתון
             row_data[f"תכנית ייצור ({target_m})"] = raw_build
             row_data[f"WIP ({target_m})"] = current_wip_qty
 
-            # בדיקת חוסרים להרכבה זו בחודש הספציפי
+        # שלב 2: איסוף וריכוז עמודות הסטטוס והחוסרים בסוף
+        for target_m in selected_target_yms:
+            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
+            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
+            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
+            net_build = max(0.0, raw_build - current_wip_qty)
+
             month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
             asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
 
