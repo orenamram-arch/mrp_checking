@@ -863,10 +863,8 @@ with tab1:
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # גיליון 1: כלל החוסרים
             display_df.to_excel(writer, index=False, sheet_name='Executive_Shortages')
             
-            # גיליון 2: מצעד 10 החוסרים (Top 10)
             top10_df_export = dash_df.nlargest(10, "Total_MRP_Shortage")[
                 ["PN", "Description", "Item_Type", "Supplier", "Total_MRP_Shortage"]
             ].rename(columns={
@@ -875,7 +873,6 @@ with tab1:
             })
             top10_df_export.to_excel(writer, index=False, sheet_name='Top_10_Bottlenecks')
             
-            # גיליון 3: מטריצת סיכון ספקים (Supplier Risk)
             sup_risk_export = dash_df.groupby('Supplier').agg(
                 Total_Shortage=('Total_MRP_Shortage', 'sum'), 
                 Unique_Items=('PN', 'nunique')
@@ -987,7 +984,6 @@ with tab2:
 
     if matrix_rows:
         matrix_df = pd.DataFrame(matrix_rows)
-        # Apply ProgressColumn for readiness %
         column_conf = {}
         for target_m in selected_target_yms:
             col_name = f"% מוכנות ({target_m})"
@@ -998,7 +994,7 @@ with tab2:
         
         st.dataframe(matrix_df, column_config=column_conf, use_container_width=True, height=420)
 
-        # RADAR CHART FOR CTB READINESS
+        # RADAR CHART FOR CTB READINESS (Fixed with numerical coercion)
         st.divider()
         col_r1, col_r2 = st.columns([1, 1])
         with col_r1:
@@ -1008,9 +1004,18 @@ with tab2:
             if radar_col_name in matrix_df.columns:
                 radar_df = matrix_df.copy()
                 radar_df['Short_Label'] = radar_df['קוד הרכבה'].astype(str) + " (" + radar_df['רמה בעץ'].astype(str) + ")"
-                fig_radar = px.line_polar(radar_df, r=radar_col_name, theta='Short_Label', line_close=True, 
-                                          markers=True, fill='toself', range_r=[0,100], 
-                                          color_discrete_sequence=[ACCENT])
+                radar_df[radar_col_name] = pd.to_numeric(radar_df[radar_col_name], errors='coerce').fillna(0)
+                
+                fig_radar = px.line_polar(
+                    radar_df, 
+                    r=radar_col_name, 
+                    theta='Short_Label', 
+                    line_close=True, 
+                    markers=True, 
+                    fill='toself', 
+                    range_r=[0, 100], 
+                    color_discrete_sequence=[ACCENT]
+                )
                 fig_radar.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=30, b=30, l=30, r=30))
                 st.plotly_chart(fig_radar, use_container_width=True)
             else:
@@ -1046,7 +1051,6 @@ with tab3:
             before_after_delta = (breakdown_df['Total_MRP_Shortage'].sum() if not breakdown_df.empty else 0) - (sim_df['Total_MRP_Shortage'].sum() if not sim_df.empty else 0)
             kpi_card("📉 צמצום גירעון", f"{before_after_delta:,.0f}", "יחידות שירדו", "blue", "🔻")
             
-        # WHAT-IF COMPARISON CHART
         st.divider()
         st.markdown("##### ⚖️ גרף השוואה: חוסר כולל בהרכבות (לפני מול אחרי הסימולציה)")
         if not breakdown_df.empty and not sim_df.empty:
