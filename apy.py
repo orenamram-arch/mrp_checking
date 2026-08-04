@@ -872,24 +872,22 @@ footer {{visibility: hidden;}}
 }}
 .exec-stat-label {{ font-size: 12px; opacity: 0.75; font-weight: 600; margin-top: 2px; }}
 
-/* טאבים גדולים, ברורים וקריאים יותר עם הרבה טאבים בשורה */
-button[data-baseweb="tab"] {{
-    font-weight: 700 !important;
-    font-size: 14.5px !important;
-    padding: 10px 16px !important;
-    border-radius: 10px 10px 0 0 !important;
-    transition: background-color 0.15s ease;
+/* תיקון ניווט: תפריט צד (sidebar) במקום שורת טאבים עם גלילה */
+[data-testid="stSidebar"] button[kind="secondary"],
+[data-testid="stSidebar"] button[kind="primary"] {{
+    text-align: right !important;
+    justify-content: flex-start !important;
+    border-radius: 8px !important;
+    margin-bottom: 3px !important;
+    font-weight: 600 !important;
 }}
-button[data-baseweb="tab"]:hover {{
-    background-color: rgba(79,70,229,0.08) !important;
-}}
-button[data-baseweb="tab"][aria-selected="true"] {{
+[data-testid="stSidebar"] button[kind="primary"] {{
     background: linear-gradient(135deg, {PRIMARY}, {PRIMARY_DARK}) !important;
-    color: white !important;
+    border: none !important;
 }}
-[data-baseweb="tab-list"] {{
-    gap: 4px !important;
-    flex-wrap: wrap !important;
+[data-testid="stSidebar"] .streamlit-expanderHeader {{
+    font-weight: 800 !important;
+    font-size: 15px !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -2012,24 +2010,52 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# TABS DEFINITION (10 הטאבים המקוריים + טאב חדש לעריכת ETA מרוכזת)
+# ניווט: תפריט צד קבוע במקום שורת טאבים עם גלילה ימינה-שמאלה
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
-    "📈 Executive Dashboard",
-    "📊 תוכנית ייצור (Smart CTB)",
-    "💡 סימולציית What-If",
-    "📌 לוח סטטוסים (Kanban)",
-    "🏭 ניהול WIP (בייצור)",
-    "📅 עדכון מלאי וספקים",
-    "📅 מעקב ETA ודחיות",
-    "↩️ ניהול UNDO",
-    "📦 ניהול מלאי מעודכן",
-    "🎯 ניתוח רגישות ותוכנית",
-    "✏️ עריכת ETA מרוכזת",
-    "🏆 קיבולת ייצור מקסימלית"
-])
+# תיקון ניווט (לא לוגיקה!): עם 12 טאבים, שורת st.tabs הרגילה דורשת
+# גלילה אופקית מציקה. הוחלף בתפריט ניווט אנכי בסיידבר (בלי גלילה
+# צדדית בכלל - רק גלילה רגילה למעלה/למטה כמו כל תפריט), מקובץ לפי
+# נושא כדי שיהיה קל יותר לאתר טאב. כל "with tabN:" הוחלף ב-
+# "if nav_page == '...':" עם אותה הזחה בדיוק - שום תוכן בתוך הטאבים
+# עצמם לא השתנה.
+st.sidebar.markdown("### 🧭 ניווט בין הטאבים")
 
-with tab1:
+NAV_GROUPS = {
+    "📊 ניתוח ומעקב": [
+        "📈 Executive Dashboard",
+        "📊 תוכנית ייצור (Smart CTB)",
+        "🏆 קיבולת ייצור מקסימלית",
+        "📌 לוח סטטוסים (Kanban)",
+        "📅 מעקב ETA ודחיות",
+    ],
+    "⚙️ פעולות וניהול": [
+        "💡 סימולציית What-If",
+        "🏭 ניהול WIP (בייצור)",
+        "📅 עדכון מלאי וספקים",
+        "✏️ עריכת ETA מרוכזת",
+    ],
+    "🛠️ מנהלה": [
+        "↩️ ניהול UNDO",
+        "📦 ניהול מלאי מעודכן",
+        "🎯 ניתוח רגישות ותוכנית",
+    ],
+}
+
+if "main_nav_page" not in st.session_state:
+    st.session_state["main_nav_page"] = "📈 Executive Dashboard"
+
+for _group_label, _group_items in NAV_GROUPS.items():
+    with st.sidebar.expander(_group_label, expanded=(st.session_state["main_nav_page"] in _group_items)):
+        for _item in _group_items:
+            _btn_type = "primary" if st.session_state["main_nav_page"] == _item else "secondary"
+            if st.button(_item, key=f"nav_btn_{_item}", use_container_width=True, type=_btn_type):
+                st.session_state["main_nav_page"] = _item
+                st.rerun()
+
+nav_page = st.session_state["main_nav_page"]
+st.markdown(f'<div class="section-title" style="font-size:22px;">{nav_page}</div>', unsafe_allow_html=True)
+
+if nav_page == "📈 Executive Dashboard":
     israel_time = datetime.utcnow() + timedelta(hours=3)
     current_time_str = israel_time.strftime("%d/%m/%Y | %H:%M:%S")
     st.markdown(f"""
@@ -2217,7 +2243,7 @@ with tab1:
     else:
         st.success("🎉 אין חוסרים ב-MRP עבור ההגדרות והסינונים שנבחרו!")
 
-with tab2:
+elif nav_page == "📊 תוכנית ייצור (Smart CTB)":
     st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית עם השוואת כמויות וגרף הרכבות מפורט</div>', unsafe_allow_html=True)
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
@@ -2296,7 +2322,7 @@ with tab2:
             fig_bar_asm.update_layout(template=PLOTLY_TEMPLATE, height=400, margin=dict(t=20, b=40, l=20, r=20), xaxis_tickangle=-25)
             st.plotly_chart(fig_bar_asm, use_container_width=True)
 
-with tab3:
+elif nav_page == "💡 סימולציית What-If":
     st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -2318,7 +2344,7 @@ with tab3:
             before_after_delta = (breakdown_df['Total_MRP_Shortage'].sum() if not breakdown_df.empty else 0) - (sim_df['Total_MRP_Shortage'].sum() if not sim_df.empty else 0)
             kpi_card("📉 צמצום גירעון", f"{before_after_delta:,.0f}", "יחידות", "blue")
 
-with tab4:
+elif nav_page == "📌 לוח סטטוסים (Kanban)":
     st.markdown('<div class="section-title">📌 לוח מעקב סטטוסים (Kanban Pipeline)</div>', unsafe_allow_html=True)
     statuses = [("פתוח", "📝 פתוח לטיפול", "#3B1F1F", DANGER), ("הוזמן", "🛒 הוזמן / בטיפול רכש", "#3B2F1F", WARNING), ("בדרך", "🚚 בדרך לקו", "#1F2A3B", ACCENT), ("התקבל", "✅ התקבל / סגור", "#1F3B2A", SUCCESS)]
     dedup_all = breakdown_df.drop_duplicates(subset=["PN"]) if not breakdown_df.empty else pd.DataFrame()
@@ -2330,7 +2356,7 @@ with tab4:
             for _, r in items.head(6).iterrows():
                 st.markdown(f'<div class="kanban-card" style="border-color:{accent_color};"><b>{r["PN"]}</b><br><span style="opacity:0.75;">{str(r["Description"])[:24]}</span></div>', unsafe_allow_html=True)
 
-with tab5:
+elif nav_page == "🏭 ניהול WIP (בייצור)":
     st.markdown(f'<div class="section-title">🏭 ניהול WIP חכם (כולל סגירת מחזור ייצור ואימות היררכיה)</div>', unsafe_allow_html=True)
     wip_current = fetch_wip_records()
     if wip_current:
@@ -2416,7 +2442,7 @@ with tab5:
                 st.success("ההרכבה נוספה בהצלחה ל-WIP!")
                 st.rerun()
 
-with tab6:
+elif nav_page == "📅 עדכון מלאי וספקים":
     st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
     selected_pn = search_pn if search_pn != "הכל" else st.selectbox("בחר מק'ט מכלל הפריטים לעדכון", sorted(df[PN_COL].dropna().astype(str).unique()), key="update_pn_select")
     if selected_pn != "הכל":
@@ -2439,7 +2465,7 @@ with tab6:
                 st.success("העדכון נשמר!")
                 st.rerun()
 
-with tab7:
+elif nav_page == "📅 מעקב ETA ודחיות":
     st.markdown('<div class="section-title">📅 מעקב ETA, דחיות, כמויות וקישורים למפיצים</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
     eta_table_rows = []
@@ -2493,7 +2519,7 @@ with tab7:
             "חיפוש ב-Findchips": st.column_config.LinkColumn("🔗 Findchips", display_text="פתח ב-Findchips")
         }, use_container_width=True, height=450)
 
-with tab8:
+elif nav_page == "↩️ ניהול UNDO":
     st.markdown('<div class="section-title">↩️ חזרה לאחור וניהול היסטוריה (UNDO)</div>', unsafe_allow_html=True)
     try: updated_items = supabase.table("mrp_inventory_updates").select("*").order("updated_at", desc=True).execute().data or []
     except: updated_items = []
@@ -2506,7 +2532,7 @@ with tab8:
                 delete_inventory_record(item.get('pn'))
                 st.rerun()
 
-with tab9:
+elif nav_page == "📦 ניהול מלאי מעודכן":
     st.markdown('<div class="section-title">📦 ניהול מלאי מעודכן (עריכה וגריעת כמויות)</div>', unsafe_allow_html=True)
     active_stock_items = {k: v for k, v in fetch_all_inventory_records().items() if float(v.get("added_stock", 0.0)) > 0}
     if active_stock_items:
@@ -2521,7 +2547,7 @@ with tab9:
                         save_inventory_record(selected_mgmt_pn, new_qty, "", "פתוח", "אופק", "", "Tab 9", webhook_url)
                     st.rerun()
 
-with tab10:
+elif nav_page == "🎯 ניתוח רגישות ותוכנית":
     st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (עריכה פרטנית לפי הרכבה וחודש)</div>', unsafe_allow_html=True)
     if not assembly_plan_df.empty:
         orig_pivot_plan = assembly_plan_df.pivot_table(index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0).reset_index()
@@ -2649,7 +2675,7 @@ with tab10:
         comparison_diff = comparison_diff.sort_values(by=["רמה", "Assembly_PN"])
         st.dataframe(comparison_diff, use_container_width=True)
 
-with tab11:
+elif nav_page == "✏️ עריכת ETA מרוכזת":
     # ==========================================================
     # טאב חדש: עריכת ETA מרוכזת לכל הפריטים
     # ==========================================================
@@ -2786,7 +2812,7 @@ with tab11:
             else:
                 st.info("לא זוהו שינויים לשמירה.")
 
-with tab12:
+elif nav_page == "🏆 קיבולת ייצור מקסימלית":
     # ==========================================================
     # טאב חדש: קיבולת ייצור מקסימלית תיאורטית לכל הרכבה
     # ==========================================================
