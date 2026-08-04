@@ -2,10 +2,9 @@
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
 1. סינון אוטומטי של תוכנית הייצור כך שכל הייצור מתחיל אך ורק מחודש ספטמבר ואילך.
-2. טאב 9 לניהול ועריכה/גריעה של פריטים שקיבלו עדכוני מלאי.
-3. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
-4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-5. טאב 10 עם מטריצת תוכנית עבודה (החל מספטמבר), ניתוח רגישות, אפשרות שמירה ועדכון, והשוואה מפורטת בין התוכנית המקורית לחדשה.
+2. טעינה מלאה של כל שורות ההרכבות (כולל רמות מתקדמות) מתוך קובץ ה-Excel.
+3. סידור ההרכבות בסדר עולה לפי רמות העץ (BOM Levels).
+4. טאב 10 עם מטריצת תוכנית עבודה (החל מספטמבר), ניתוח רגישות, אפשרות שמירה ועדכון, והשוואה מפורטת בין התוכנית המקורית לחדשה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -339,11 +338,42 @@ except Exception as e:
     st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
     st.stop()
 
+PN_COL = df.columns[1]
+DESC_COL = df.columns[4]
+ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
+STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
+ASSEMBLY_COLS = df.columns[10:36].tolist()
+MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
+
+valid_assemblies = []
+for col in ASSEMBLY_COLS:
+    try:
+        col_type = df.loc[df[PN_COL] == col, ITEM_TYPE_COL].values
+        if len(col_type) > 0 and str(col_type[0]) != 'nan':
+            valid_assemblies.append(col)
+        else:
+            valid_assemblies.append(col)
+    except:
+        pass
+
+assembly_levels = {}
+for col in valid_assemblies:
+    try:
+        col_idx = df.columns.get_loc(col)
+        lvl_val = int(df_levels.iloc[0, col_idx])
+        assembly_levels[col] = lvl_val
+    except:
+        assembly_levels[col] = 0
+
+# מיון ההרכבות לפי רמות העץ (BOM Level) בסדר עולה
+valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), x))
+
 if "custom_assembly_plan_df" not in st.session_state:
     header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
     plan_rows = []
 
-    for r in range(3, min(24, df_raw.shape[0])):
+    # סריקה מלאה של כל שורות ההרכבות בקובץ Raw (מהשורה ה-3 ועד שורת הסיום)
+    for r in range(3, df_raw.shape[0]):
         asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
         if pd.notnull(asm_pn):
             clean_asm_pn = str(asm_pn).strip()
@@ -371,33 +401,6 @@ if "custom_assembly_plan_df" not in st.session_state:
     st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
 
 assembly_plan_df = st.session_state["custom_assembly_plan_df"]
-
-PN_COL = df.columns[1]
-DESC_COL = df.columns[4]
-ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
-STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
-ASSEMBLY_COLS = df.columns[10:36].tolist()
-MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
-
-valid_assemblies = []
-for col in ASSEMBLY_COLS:
-    try:
-        col_type = df.loc[df[PN_COL] == col, ITEM_TYPE_COL].values
-        if len(col_type) > 0 and str(col_type[0]) != 'nan':
-            valid_assemblies.append(col)
-        else:
-            valid_assemblies.append(col)
-    except:
-        pass
-
-assembly_levels = {}
-for col in valid_assemblies:
-    try:
-        col_idx = df.columns.get_loc(col)
-        lvl_val = int(df_levels.iloc[0, col_idx])
-        assembly_levels[col] = lvl_val
-    except:
-        assembly_levels[col] = 0
 
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
 
@@ -488,7 +491,7 @@ except:
 
 num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
 
-level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
+level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)))
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
 
 assembly_mapping = {"הכל": "הכל"}
@@ -496,7 +499,7 @@ filtered_assembly_cols = []
 for col in valid_assemblies:
     try:
         col_idx = df.columns.get_loc(col)
-        lvl = str(df_levels.iloc[0, col_idx])
+        lvl = str(assembly_levels.get(col, 0))
         desc = df_desc.iloc[0, col_idx]
         if selected_level == "הכל" or lvl == selected_level:
             filtered_assembly_cols.append(col)
@@ -1534,9 +1537,9 @@ with tab9:
 
 with tab10:
     st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית - החל מספטמבר)</div>', unsafe_allow_html=True)
-    st.markdown("כאן מוצגת תוכנית העבודה (המתחילה מספטמבר ואילך) בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות, להריץ סימולציה, ולאחר מכן לבחור האם לשמור ולאשר את התוכנית החדשה.")
+    st.markdown("כאן מוצגת תוכנית העבודה (המתחילה מספטמבר ואילך) בצורה מטריציונית ממוינת לפי רמות עץ, כולל ניתוח רגישות, אפשרות שמירה ועדכון, והשוואה בין התוכנית המקורית לחדשה.")
 
-    st.markdown("##### 📅 מטריצת תוכנית העבודה המקורית / הנוכחית (הרכבות בשורות, חודשים בעמודות)")
+    st.markdown("##### 📅 מטריצת תוכנית העבודה המקורית / הנוכחית (מסודרת לפי רמות עץ)")
     if not assembly_plan_df.empty:
         orig_pivot_plan = assembly_plan_df.pivot_table(
             index=["Assembly_PN"],
@@ -1544,7 +1547,13 @@ with tab10:
             values="Build_Qty",
             fill_value=0.0
         ).reset_index()
-        orig_pivot_plan.insert(1, "תיאור הרכבה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+
+        # סידור ההרכבות בטבלה לפי רמות עץ
+        orig_pivot_plan["Level"] = orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0))
+        orig_pivot_plan = orig_pivot_plan.sort_values(by=["Level", "Assembly_PN"]).drop(columns=["Level"])
+
+        orig_pivot_plan.insert(1, "רמה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
+        orig_pivot_plan.insert(2, "תיאור הרכבה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
         st.dataframe(orig_pivot_plan, use_container_width=True, height=280)
     else:
         st.info("אין נתוני תוכנית עבודה זמינים.")
@@ -1714,7 +1723,6 @@ with tab10:
             
             if st.form_submit_button("כן, שמור ועדכן את תוכנית העבודה החדשה"):
                 if update_confirmation:
-                    # שמירת התוכנית הישנה להצגת השוואה
                     st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
                     st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
                     del st.session_state["temp_simulated_plan"]
@@ -1723,10 +1731,9 @@ with tab10:
                 else:
                     st.warning("יש לסמן את תיבת האישור כדי לעדכן את התוכנית בפועל.")
 
-    # הצגת השוואה בין התוכנית שהייתה במקור לבין התוכנית החדשה שאושרה (אם קיימת)
     if "previous_approved_plan" in st.session_state:
         st.divider()
-        st.markdown("##### 📊 השוואה בין תוכנית הייצור המקורית לתוכנית החדשה שאושרה")
+        st.markdown("##### 📊 השוואה בין תוכנית הייצור המקורית לתוכנית החדשה שאושרה (מסודרת לפי רמות עץ)")
         
         orig_plan_pivot = st.session_state["previous_approved_plan"].pivot_table(
             index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0
@@ -1736,7 +1743,11 @@ with tab10:
         )
         
         comparison_diff = new_plan_pivot.sub(orig_plan_pivot, fill_value=0.0).reset_index()
-        comparison_diff.insert(1, "תיאור הרכבה", comparison_diff["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        comparison_diff["Level"] = comparison_diff["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0))
+        comparison_diff = comparison_diff.sort_values(by=["Level", "Assembly_PN"]).drop(columns=["Level"])
+
+        comparison_diff.insert(1, "רמה", comparison_diff["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
+        comparison_diff.insert(2, "תיאור הרכבה", comparison_diff["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
         
         st.markdown("הטבלה להלן מציגה את **ההפרש (Delta)** בין כמויות הייצור המקוריות לחדשות עבור כל הרכבה וחודש:")
         st.dataframe(comparison_diff, use_container_width=True)
