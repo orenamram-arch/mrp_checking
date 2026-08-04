@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מלאה, מתוקנת ומושלמת המיישמת את סדר ההרכבות המדויק, תחילת ייצור מספטמבר, ומנגנוני הגנה.
+גרסה מלאה ומושלמת המיישמת את סדר ההרכבות המדויק, תחילת ייצור מספטמבר, ומנגנוני הגנה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -29,6 +29,7 @@ ASSEMBLY_SYSTEM_FACTORS = {
     "1096G880": 4
 }
 
+# סדר ההרכבות המדויק לפי התמונה שסיפקת
 EXACT_ASSEMBLIES_ORDER = [
     "6932T100", "6932T300", "1093W210", "1096J800", "1096G860", 
     "1093U447", "1093M635", "1096B650", "1096G880", "1093L395", 
@@ -350,7 +351,9 @@ with tab1:
 with tab2:
     st.markdown("### 📊 טבלת CTB - סדר הרכבות מדויק")
     matrix_rows = []
-    for asm in (filtered_assembly_cols if selected_assembly == "הכל" else [selected_assembly]):
+    # סידור לפי הסדר המדויק מתוך EXACT_ASSEMBLIES_ORDER
+    assemblies_display_order = [asm for asm in EXACT_ASSEMBLIES_ORDER if selected_assembly == "הכל" or asm == selected_assembly]
+    for asm in assemblies_display_order:
         matrix_rows.append({"קוד הרכבה": asm, "רמה": assembly_levels.get(asm, 0)})
     st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True)
 
@@ -358,6 +361,9 @@ with tab3:
     st.markdown("### 🎯 ניהול תוכנית עבודה חודשית (החל מספטמבר)")
     if not assembly_plan_df.empty and "YearMonth" in assembly_plan_df.columns:
         pivot_df = assembly_plan_df.pivot_table(index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0).reset_index()
+        # התאמת הסדר במטריצה לסדר המבוקש
+        pivot_df["Assembly_PN"] = pd.Categorical(pivot_df["Assembly_PN"], categories=EXACT_ASSEMBLIES_ORDER, ordered=True)
+        pivot_df = pivot_df.sort_values("Assembly_PN").reset_index(drop=True)
         st.dataframe(pivot_df, use_container_width=True)
     else:
         st.info("אין נתוני תוכנית ייצור זמינים החל מחודש ספטמבר.")
