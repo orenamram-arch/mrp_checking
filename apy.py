@@ -30,9 +30,9 @@ st.set_page_config(
 # ==========================================================
 # GLOBAL THEME / CSS
 # ==========================================================
-PRIMARY = "#4F46E5"      # indigo
+PRIMARY = "#4F46E5"
 PRIMARY_DARK = "#3730A3"
-ACCENT = "#06B6D4"       # cyan
+ACCENT = "#06B6D4"
 DANGER = "#EF4444"
 WARNING = "#F59E0B"
 SUCCESS = "#10B981"
@@ -81,45 +81,15 @@ footer {{visibility: hidden;}}
     padding: 18px 16px;
     text-align: center;
     box-shadow: 0 4px 14px rgba(0,0,0,0.1);
-    transition: transform 0.15s ease;
 }}
-.kpi-card:hover {{ transform: translateY(-3px); }}
-.kpi-label {{
-    font-size: 13px;
-    opacity: 0.75;
-    margin-bottom: 6px;
-    font-weight: 600;
-}}
-.kpi-value {{
-    font-size: 30px;
-    font-weight: 800;
-}}
-.kpi-sub {{
-    font-size: 12px;
-    opacity: 0.6;
-    margin-top: 4px;
-}}
+.kpi-label {{ font-size: 13px; opacity: 0.75; margin-bottom: 6px; font-weight: 600; }}
+.kpi-value {{ font-size: 30px; font-weight: 800; }}
+.kpi-sub {{ font-size: 12px; opacity: 0.6; margin-top: 4px; }}
 
 .kpi-green {{ border-top: 4px solid {SUCCESS}; }}
 .kpi-red {{ border-top: 4px solid {DANGER}; }}
 .kpi-orange {{ border-top: 4px solid {WARNING}; }}
 .kpi-blue {{ border-top: 4px solid {ACCENT}; }}
-
-@media (prefers-color-scheme: light) {{
-    .kpi-card, .kanban-card {{
-        background-color: #ffffff !important;
-        color: #111827 !important;
-        border-color: #e5e7eb !important;
-    }}
-}}
-
-@media (prefers-color-scheme: dark) {{
-    .kpi-card, .kanban-card {{
-        background-color: #1f2937 !important;
-        color: #f9fafb !important;
-        border-color: #374151 !important;
-    }}
-}}
 
 .section-title {{
     font-weight: 800;
@@ -129,54 +99,18 @@ footer {{visibility: hidden;}}
     padding-right: 10px;
     color: var(--text-color, inherit);
 }}
-
-.kanban-col-header {{
-    font-weight: 800;
-    font-size: 15px;
-    padding: 8px 12px;
-    border-radius: 10px;
-    margin-bottom: 8px;
-    text-align: center;
-}}
-.kanban-card {{
-    border: 1px solid rgba(128,128,128,0.2);
-    border-radius: 10px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-    border-right: 3px solid {PRIMARY};
-    font-size: 13px;
-}}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero-banner">
     <h1>🚀 MRP Executive Control Tower & Decision Hub</h1>
-    <p>מערכת ניהול חוסרים מתקדמת מבוססת תוכנית עבודה מאושרת, סימולציות קבלת החלטות (What-If), וענן מסונכרן</p>
+    <p>מערכת ניהול חוסרים מתקדמת מבוססת תוכנית עבודה מדויקת לפי סדר תצוגה מקורי</p>
 </div>
 """, unsafe_allow_html=True)
 
-
-def kpi_card(label, value, sub="", color="blue"):
-    st.markdown(f"""
-    <div class="kpi-card kpi-{color}">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        <div class="kpi-sub">{sub}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-try:
-    _theme_base = st.get_option("theme.base")
-except Exception:
-    _theme_base = None
-
-PLOTLY_TEMPLATE = "plotly_white" if _theme_base == "light" else "plotly_dark"
-COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#34D399"]
-
 # ==========================================================
-# SUPABASE SETUP & FAST CACHED STORAGE
+# SUPABASE SETUP
 # ==========================================================
 SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
 SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
@@ -198,11 +132,10 @@ def fetch_all_inventory_records():
                 eta_val = row.get("eta", "")
                 if not eta_val or str(eta_val).strip() in ["", "None", "NaT", "nan"]:
                     eta_val = ""
-                status_val = row.get("status", "פתוח") or "פתוח"
                 records[pn] = {
                     "added_stock": float(row.get("added_stock", 0.0) or 0.0),
                     "eta": eta_val,
-                    "status": status_val,
+                    "status": row.get("status", "פתוח") or "פתוח",
                     "supplier": row.get("supplier", "אופק"),
                     "comment": row.get("comment", ""),
                     "updated_by": row.get("updated_by", ""),
@@ -216,15 +149,7 @@ def get_inventory_record(pn, cache=None):
     all_recs = cache if cache is not None else fetch_all_inventory_records()
     res = all_recs.get(str(pn).strip())
     if res:
-        return (
-            res["added_stock"],
-            res["eta"],
-            res["status"],
-            res["supplier"],
-            res["comment"],
-            res["updated_by"],
-            res["updated_at"]
-        )
+        return (res["added_stock"], res["eta"], res["status"], res["supplier"], res["comment"], res["updated_by"], res["updated_at"])
     return 0.0, "", "פתוח", "אופק", "", "", ""
 
 @st.cache_data(ttl=5)
@@ -241,61 +166,44 @@ def save_wip_record(assembly_pn, wip_qty):
     current_wip_dict = fetch_wip_records()
     existing_qty = current_wip_dict.get(str(assembly_pn), 0.0)
     total_new_qty = existing_qty + float(wip_qty)
-
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
-    payload = {
-        "assembly_pn": str(assembly_pn),
-        "wip_qty": float(total_new_qty),
-        "updated_at": now_str
-    }
+    payload = {"assembly_pn": str(assembly_pn), "wip_qty": float(total_new_qty), "updated_at": now_str}
     try:
         supabase.table("mrp_wip_assemblies").upsert(payload, on_conflict="assembly_pn").execute()
         fetch_wip_records.clear()
     except Exception as e:
-        st.error(f"שגיאה בשמירת WIP ל-Supabase: {e}")
+        st.error(f"שגיאה בשמירת WIP: {e}")
 
 def delete_wip_record(assembly_pn):
     try:
         supabase.table("mrp_wip_assemblies").delete().eq("assembly_pn", str(assembly_pn)).execute()
         fetch_wip_records.clear()
     except Exception as e:
-        st.error(f"שגיאה במחיקת WIP מ-Supabase: {e}")
+        st.error(f"שגיאה במחיקת WIP: {e}")
 
-def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
+def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by):
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     payload = {
-        "pn": str(pn),
-        "added_stock": float(added_stock),
-        "eta": str(eta),
-        "status": str(status),
-        "supplier": str(supplier),
-        "comment": str(comment),
-        "updated_by": str(updated_by),
-        "updated_at": now_str
+        "pn": str(pn), "added_stock": float(added_stock), "eta": str(eta),
+        "status": str(status), "supplier": str(supplier), "comment": str(comment),
+        "updated_by": str(updated_by), "updated_at": now_str
     }
     try:
         supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
         supabase.table("mrp_inventory_history").insert(payload).execute()
         fetch_all_inventory_records.clear()
     except Exception as e:
-        st.error(f"שגיאה בשמירה ל-Supabase: {e}")
-
-    if webhook_url:
-        msg = "🔔 עדכון מלאי/ETA למוצר!\nמק'ט: " + str(pn) + "\nתוספת מלאי: " + str(added_stock) + "\nסטטוס: " + str(status) + "\nETA: " + str(eta)
-        try:
-            requests.post(webhook_url, data=json.dumps({"text": msg}), headers={'Content-Type': 'application/json'})
-        except:
-            pass
+        st.error(f"שגיאה בשמירה לענן: {e}")
 
 def delete_inventory_record(pn):
     try:
         supabase.table("mrp_inventory_updates").delete().eq("pn", str(pn)).execute()
         fetch_all_inventory_records.clear()
     except Exception as e:
-        st.error(f"שגיאה במחיקה מ-Supabase: {e}")
+        st.error(f"שגיאה במחיקה: {e}")
 
 # ==========================================================
-# DATA LOADING FROM GITHUB & SESSION STATE FOR PLAN OVERRIDE
+# DATA LOADING & EXACT ORDER PRESERVATION
 # ==========================================================
 @st.cache_data
 def load_data(url):
@@ -303,7 +211,6 @@ def load_data(url):
     df_levels = pd.read_excel(url, header=None, skiprows=28, nrows=1)
     df_desc = pd.read_excel(url, header=None, skiprows=27, nrows=1)
     df_raw = pd.read_excel(url, header=None)
-
     df.columns = [str(c).strip() if pd.notnull(c) else c for c in df.columns]
     return df, df_levels, df_desc, df_raw
 
@@ -311,42 +218,50 @@ try:
     with st.spinner('טוען נתוני MRP מ-GitHub...'):
         df, df_levels, df_desc, df_raw = load_data(GITHUB_URL)
 except Exception as e:
-    st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
+    st.error(f"שגיאה בטעינת הקובץ: {e}")
     st.stop()
 
+# טעינת תוכנית העבודה תוך סריקת כלל השורות האפשריות ושמירה על סדר ההצגה המקורי
 if "custom_assembly_plan_df" not in st.session_state:
     header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
     plan_rows = []
+    ordered_assemblies_list = []
 
-    for r in range(3, min(24, df_raw.shape[0])):
+    # סריקה מורחבת של כל השורות כדי לוודא שכל ההרכבות (כולל התחתונות כמו REAR COVER) נכללות
+    for r in range(3, df_raw.shape[0]):
         asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
         if pd.notnull(asm_pn):
             clean_asm_pn = str(asm_pn).strip()
-            system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
+            if clean_asm_pn and clean_asm_pn != 'nan':
+                if clean_asm_pn not in ordered_assemblies_list:
+                    ordered_assemblies_list.append(clean_asm_pn)
 
-            for c_idx, date_val in enumerate(header_dates):
-                if pd.notnull(date_val):
-                    qty = df_raw.iloc[r, 108 + c_idx]
-                    if pd.notnull(qty) and qty != '' and qty != 'NaN':
-                        try:
-                            q_val = float(qty)
-                            if q_val > 0:
-                                dt = pd.to_datetime(date_val)
-                                ym_str = dt.strftime("%Y-%m")
-                                # סינון מובנה: תוכנית העבודה מתחילה אך ורק מחודש ספטמבר 2026 ואילך
-                                if ym_str >= "2026-09":
-                                    displayed_build_qty = q_val * system_multiplier
-                                    plan_rows.append({
-                                        "Assembly_PN": clean_asm_pn,
-                                        "YearMonth": ym_str,
-                                        "Build_Qty": displayed_build_qty,
-                                        "Raw_Build_Qty": q_val
-                                    })
-                        except:
-                            pass
+                system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
+
+                for c_idx, date_val in enumerate(header_dates):
+                    if pd.notnull(date_val):
+                        qty = df_raw.iloc[r, 108 + c_idx]
+                        if pd.notnull(qty) and qty != '' and qty != 'NaN':
+                            try:
+                                q_val = float(qty)
+                                if q_val > 0:
+                                    dt = pd.to_datetime(date_val)
+                                    ym_str = dt.strftime("%Y-%m")
+                                    if ym_str >= "2026-09":
+                                        plan_rows.append({
+                                            "Assembly_PN": clean_asm_pn,
+                                            "YearMonth": ym_str,
+                                            "Build_Qty": q_val * system_multiplier,
+                                            "Raw_Build_Qty": q_val
+                                        })
+                            except:
+                                pass
+
     st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
+    st.session_state["ordered_assemblies"] = ordered_assemblies_list
 
 assembly_plan_df = st.session_state["custom_assembly_plan_df"]
+ordered_assemblies = st.session_state.get("ordered_assemblies", [])
 
 PN_COL = df.columns[1]
 DESC_COL = df.columns[4]
@@ -355,23 +270,13 @@ STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
 
-valid_assemblies = []
-for col in ASSEMBLY_COLS:
-    try:
-        col_type = df.loc[df[PN_COL] == col, ITEM_TYPE_COL].values
-        if len(col_type) > 0 and str(col_type[0]) != 'nan':
-            valid_assemblies.append(col)
-        else:
-            valid_assemblies.append(col)
-    except:
-        pass
+valid_assemblies = [col for col in ASSEMBLY_COLS if col in df[PN_COL].values] or ordered_assemblies
 
 assembly_levels = {}
 for col in valid_assemblies:
     try:
         col_idx = df.columns.get_loc(col)
-        lvl_val = int(df_levels.iloc[0, col_idx])
-        assembly_levels[col] = lvl_val
+        assembly_levels[col] = int(df_levels.iloc[0, col_idx])
     except:
         assembly_levels[col] = 0
 
@@ -381,364 +286,125 @@ def get_base_mrp_eta_and_qty(pn):
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if not matching_rows.empty:
         row_idx = matching_rows.index[0]
-        max_cols = df_raw.shape[1]
-
-        for col_pos in range(50, max_cols):
+        for col_pos in range(50, df_raw.shape[1]):
             try:
                 val = df_raw.iloc[row_idx, col_pos]
-                if pd.notnull(val) and val != '' and val != 'NaN':
-                    q = float(val)
-                    if q > 0:
-                        date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
-                        if pd.notnull(date_val):
-                            if isinstance(date_val, datetime):
-                                corrected_dt = date_val - pd.DateOffset(months=1)
-                                return corrected_dt.strftime("%Y-%m"), q
-                            dt = pd.to_datetime(date_val, errors='coerce', dayfirst=False)
-                            if pd.notnull(dt) and dt.year >= 2024:
-                                corrected_dt = dt - pd.DateOffset(months=1)
-                                return corrected_dt.strftime("%Y-%m"), q
+                if pd.notnull(val) and float(val) > 0:
+                    date_val = raw_eta_dates[col_pos] if col_pos < len(raw_eta_dates) else None
+                    if pd.notnull(date_val):
+                        dt = pd.to_datetime(date_val, errors='coerce')
+                        if pd.notnull(dt):
+                            return (dt - pd.DateOffset(months=1)).strftime("%Y-%m"), float(val)
             except:
                 pass
     return "בדיקה נדרשת", 0.0
-
-def get_base_mrp_eta(pn):
-    eta, _ = get_base_mrp_eta_and_qty(pn)
-    return eta
-
-def get_base_mrp_qty(pn):
-    _, qty = get_base_mrp_eta_and_qty(pn)
-    return qty
 
 def get_first_supply_eta(pn, inv_cache=None):
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
         return manual_eta
-    return get_base_mrp_eta(pn)
+    eta, _ = get_base_mrp_eta_and_qty(pn)
+    return eta
 
 # ==========================================================
-# SIDEBAR FILTERS & WHAT-IF CONTROLS
+# SIDEBAR FILTERS
 # ==========================================================
-st.sidebar.header("⚙️ הגדרות מערכת וחיבור")
-webhook_url = st.sidebar.text_input("🔗 Teams / Slack Webhook URL (אופציונלי)", value="")
-supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
-
 st.sidebar.header("🔍 מסננים מתקדמים")
-
-if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
-    keys_to_clear = ["selected_month_label", "num_months_ahead", "selected_level", "selected_assembly", "selected_item_type", "selected_search_item"]
-    for k in keys_to_clear:
-        if k in st.session_state:
-            del st.session_state[k]
+if st.sidebar.button("🧹 איפוס כל המסננים"):
     st.rerun()
 
-current_ym_str = "2026-09"
 month_options = {}
 for m in MONTH_COLS:
     if pd.notnull(m):
         try:
             dt = pd.to_datetime(m)
-            m_ym = dt.strftime("%Y-%m")
-            if m_ym >= "2026-09":
-                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            if dt.strftime("%Y-%m") >= "2026-09":
+                month_options[dt.strftime("%B %Y (%Y-%m)")] = m
         except:
             pass
 
-if not month_options:
-    for m in MONTH_COLS:
-        if pd.notnull(m):
-            try:
-                dt = pd.to_datetime(m)
-                if dt.month >= 9 or dt.strftime("%Y-%m") >= "2026-09":
-                    month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
-            except:
-                pass
-
-selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()), key="selected_month_label")
+selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()))
 selected_month_col = month_options[selected_month_label]
+selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה בחודשים", 1, 6, 1)
 
-try:
-    selected_ym = pd.to_datetime(selected_month_col).strftime("%Y-%m")
-except:
-    selected_ym = str(selected_month_col)[:7]
-
-num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
-
-level_options = ["הכל"] + sorted([str(df_levels.iloc[0, df.columns.get_loc(c)]) for c in valid_assemblies if pd.notnull(df_levels.iloc[0, df.columns.get_loc(c)])])
-selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
-
-assembly_mapping = {"הכל": "הכל"}
-filtered_assembly_cols = []
-for col in valid_assemblies:
-    try:
-        col_idx = df.columns.get_loc(col)
-        lvl = str(df_levels.iloc[0, col_idx])
-        desc = df_desc.iloc[0, col_idx]
-        if selected_level == "הכל" or lvl == selected_level:
-            filtered_assembly_cols.append(col)
-            assembly_mapping[col] = str(col) + " - " + str(desc) + " (רמה " + str(lvl) + ")"
-    except:
-        filtered_assembly_cols.append(col)
-        assembly_mapping[col] = col
-
-selected_assembly = st.sidebar.selectbox(
-    "בחר הרכבה ספציפית לדשבורד",
-    ["הכל"] + filtered_assembly_cols,
-    format_func=lambda x: assembly_mapping.get(x, x),
-    key="selected_assembly"
-)
-
-item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
-selected_item_type = st.sidebar.selectbox("בחר סוג פריט", ["הכל"] + item_types, key="selected_item_type")
-
-item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
-selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices, key="selected_search_item")
-search_pn = selected_search_item.split(" - ")[0] if selected_search_item != "הכל" else "הכל"
+assembly_mapping = {col: f"{col} - {df_desc.iloc[0, df.columns.get_loc(col)] if col in df.columns else ''}" for col in valid_assemblies}
+selected_assembly = st.sidebar.selectbox("בחר הרכבה ספציפית", ["הכל"] + valid_assemblies, format_func=lambda x: assembly_mapping.get(x, x))
 
 # ==========================================================
-# CORE LOGIC FOR SHORTAGES (OR Condition Across MRP Columns)
+# CORE LOGIC FOR SHORTAGES
 # ==========================================================
 all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
-start_idx = 0
-for idx, ym in enumerate(all_ym_list):
-    if ym >= selected_ym:
-        start_idx = idx
-        break
-selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead]
-if not selected_target_yms:
-    selected_target_yms = [selected_ym]
+start_idx = next((i for i, ym in enumerate(all_ym_list) if ym >= selected_ym), 0)
+selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead] or [selected_ym]
 
-def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
-    if sim_extra_stock is None:
-        sim_extra_stock = {}
+def calculate_mrp_breakdown(target_yms=None):
     if target_yms is None:
         target_yms = selected_target_yms
-
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
 
-    target_month_cols_map = {}
-    for m_c in MONTH_COLS:
-        if pd.notnull(m_c):
-            try:
-                m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
-                if m_dt_ym in target_yms:
-                    target_month_cols_map[m_dt_ym] = m_c
-            except:
-                pass
-
+    target_month_cols_map = {pd.to_datetime(m_c).strftime("%Y-%m"): m_c for m_c in MONTH_COLS if pd.notnull(m_c)}
     temp_df = df.copy()
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
         pn = str(row[PN_COL]).strip()
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
-        sim_val = sim_extra_stock.get(pn, 0.0)
-        total_added_stock = saved_stock_add + sim_val
-
-        max_shortage_val = 0.0
-        is_short_or = False
+        saved_stock, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+        max_sh = 0.0
+        is_short = False
 
         for ym in target_yms:
             col_name = target_month_cols_map.get(ym)
             if col_name and col_name in temp_df.columns:
                 mrp_val = pd.to_numeric(row[col_name], errors='coerce') or 0
-                effective_mrp_val = mrp_val + total_added_stock if mrp_val < 0 else mrp_val
-
-                if effective_mrp_val < 0:
-                    is_short_or = True
-                    sh_qty = abs(effective_mrp_val)
-                    if sh_qty > max_shortage_val:
-                        max_shortage_val = sh_qty
-
-        if is_short_or:
-            shortage_records[idx] = max_shortage_val
+                eff = mrp_val + saved_stock if mrp_val < 0 else mrp_val
+                if eff < 0:
+                    is_short = True
+                    max_sh = max(max_sh, abs(eff))
+        if is_short:
+            shortage_records[idx] = max_sh
 
     temp_df['Monthly_Balance'] = temp_df.index.map(lambda i: -shortage_records[i] if i in shortage_records else 1.0)
-
-    for idx, row in temp_df.iterrows():
-        pn = str(row[PN_COL]).strip()
-        _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
-        if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
-            try:
-                eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
-                if eta_ym > max(target_yms):
-                    if idx in shortage_records:
-                        temp_df.at[idx, 'Monthly_Balance'] = -abs(temp_df.at[idx, 'Monthly_Balance'])
-            except:
-                pass
-
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
     month_plan = assembly_plan_df[assembly_plan_df["YearMonth"].isin(target_yms)]
     plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
-    for asm_wip, wip_qty in wip_cache.items():
-        if wip_qty > 0 and asm_wip in plan_dict:
-            sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_wip, 1)
-            raw_wip_qty = wip_qty / sys_factor
-            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
-
     breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
         pn = str(row[PN_COL]).strip()
         desc = str(row[DESC_COL])
-        item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
+        stock = (pd.to_numeric(row[STOCK_COL], errors='coerce') or 0) + get_inventory_record(pn, inv_cache)[0]
+        tot_sh = row['Total_MRP_Shortage']
 
-        base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
-        stock = base_stock + saved_stock_add + sim_extra_stock.get(pn, 0.0)
+        for asm in valid_assemblies:
+            if asm in temp_df.columns:
+                qty_per = pd.to_numeric(row[asm], errors='coerce') or 0
+                if qty_per > 0:
+                    breakdown_rows.append({
+                        "PN": pn, "Description": desc, "Assembly": asm,
+                        "Qty_Per_Assembly": qty_per, "Total_MRP_Shortage": tot_sh, "Stock": stock
+                    })
+    return pd.DataFrame(breakdown_rows)
 
-        total_mrp_shortage = row['Total_MRP_Shortage']
-        _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
-
-        mouser_link = f"https://www.mouser.co.il/c/?q={pn}"
-        digikey_link = f"https://www.digikey.com/en/products/result?keywords={pn}"
-        findchips_link = f"https://www.findchips.com/search/{pn}"
-
-        added_for_this_pn = False
-        for asm in filtered_assembly_cols:
-            qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
-            if qty_per_asm > 0:
-                added_for_this_pn = True
-                asm_build_qty = plan_dict.get(asm, 0.0)
-                required_demand = qty_per_asm * asm_build_qty
-                asm_desc = assembly_mapping.get(asm, asm)
-
-                breakdown_rows.append({
-                    "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
-                    "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1),
-                    "Required_Demand": required_demand,
-                    "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
-                    "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
-                })
-
-        if not added_for_this_pn:
-            breakdown_rows.append({
-                "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
-                "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
-                "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
-                "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
-            })
-
-    res_df = pd.DataFrame(breakdown_rows)
-    if not res_df.empty:
-        if selected_item_type != "הכל":
-            res_df = res_df[res_df["Item_Type"] == selected_item_type]
-        if selected_assembly != "הכל":
-            res_df = res_df[res_df["Assembly"] == selected_assembly]
-        if search_pn != "הכל":
-            res_df = res_df[res_df["PN"] == search_pn]
-
-    return res_df
-
-breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
+breakdown_df = calculate_mrp_breakdown()
 
 # ==========================================================
 # TABS DEFINITION
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-    "📈 Executive Dashboard",
-    "📊 תוכנית ייצור (Smart CTB)",
-    "💡 סימולציית What-If",
-    "📌 לוח סטטוסים (Kanban)",
-    "🏭 ניהול WIP (בייצור)",
-    "📅 עדכון מלאי וספקים",
-    "📅 מעקב ETA ודחיות",
-    "↩️ ניהול UNDO",
-    "📦 ניהול מלאי מעודכן",
-    "🎯 ניתוח רגישות ותוכנית"
-])
-
-with tab1:
-    israel_time = datetime.utcnow() + timedelta(hours=3)
-    current_time_str = israel_time.strftime("%d/%m/%Y | %H:%M:%S")
-    st.markdown(f"""
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; opacity: 0.85; font-weight: 600;">
-        <div>🎯 תמונת מצב ניהולית לטווח חודשים: {', '.join(selected_target_yms)}</div>
-        <div>🕒 שעון ישראל (עדכני): {current_time_str}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    dash_df = breakdown_df.copy()
-    if selected_assembly != "הכל":
-        dash_df = dash_df[dash_df["Assembly"] == selected_assembly]
-
-    wip_cache_dash = fetch_wip_records()
-    inv_cache_dash = fetch_all_inventory_records()
-
-    total_planned_qty = 0.0
-    total_executable_qty = 0.0
-    total_planned_assemblies_count = 0
-    blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
-
-    assemblies_to_evaluate = [a for a in valid_assemblies if selected_assembly == "הכל" or a == selected_assembly]
-
-    for asm_col in assemblies_to_evaluate:
-        for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_dash.get(asm_col, 0.0)
-
-            if raw_build > 0 or current_wip_qty > 0:
-                total_planned_assemblies_count += 1
-                total_planned_qty += raw_build
-
-                month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-                asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-                max_possible_build = raw_build
-                if not asm_shortages.empty and raw_build > 0:
-                    for _, s_row in asm_shortages.iterrows():
-                        req_per = s_row["Qty_Per_Assembly"]
-                        if req_per > 0:
-                            comp_pn = str(s_row["PN"]).strip()
-                            comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
-                            if not comp_match.empty:
-                                c_row = comp_match.iloc[0]
-                                base_stk = pd.to_numeric(c_row.get(STOCK_COL, 0), errors='coerce') or 0
-                                saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_dash)
-                                total_comp_stock = base_stk + saved_stk
-                                possible_from_this = total_comp_stock / req_per
-                                max_possible_build = min(max_possible_build, possible_from_this)
-                    gross_executable = max(0.0, min(raw_build, max_possible_build))
-                else:
-                    gross_executable = raw_build
-
-                net_executable_qty = max(0.0, gross_executable - current_wip_qty)
-                total_executable_qty += net_executable_qty
-
-    readiness_pct = (total_executable_qty / total_planned_qty * 100) if total_planned_qty > 0 else 100
-    unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
-    active_wip_list = [(w, q) for w, q in wip_cache_dash.items() if q > 0]
-    total_wip_active_count = len(active_wip_list)
-
-    col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
-    with col_k1:
-        kpi_card("🟢 מוכנות ייצור משוקללת", f"{readiness_pct:.1f}%", f"{total_executable_qty:,.0f} / {total_planned_qty:,.0f} יחידות ניתן לייצור", "green")
-    with col_k2:
-        kpi_card("🔴 הרכבות חסומות", blocked_assemblies, "בטווח הנבחר", "red")
-    with col_k3:
-        kpi_card("🏭 פעילים ב-WIP", total_wip_active_count, "הודעות ייצור פעילות", "blue")
-    with col_k4:
-        kpi_card("📦 מק'טים בגירעון", unique_shortage_count, "פריטים ייחודיים", "orange")
-    with col_k5:
-        kpi_card("📊 גירעון מצטברת", f"{dash_df['Total_MRP_Shortage'].sum():,.0f}" if not dash_df.empty else "0", "יחידות", "blue")
+tab1, tab2, tab10 = st.tabs(["📈 Executive Dashboard", "📊 תוכנית ייצור (Smart CTB)", "🎯 ניתוח רגישות ותוכנית"])
 
 with tab2:
-    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית המבוססת על תוכנית העבודה</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מציגה לכל הרכבה שורה אחת אחידה. עמודות הכמויות (תוכנית עבודה מוסדרת, כמות ניתנת לייצור בפועל, ו-WIP) מרוכזות בהתחלה אחת ליד השנייה, ועמודות הסטטוס והחוסרים בסוף.")
+    st.markdown(f'<div class="section-title">📊 סימולציית Clear To Build (CTB) מטריציונית בדיוק לפי סדר ההרכבות</div>', unsafe_allow_html=True)
 
     inv_cache_ctb = fetch_all_inventory_records()
     wip_cache_ctb = fetch_wip_records()
-
     matrix_rows = []
-    chart_assembly_data = []
-    assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
-    for asm_col in assemblies_to_check:
+    # מעבר מדויק על ההרכבות בסדר הנכון
+    for asm_col in valid_assemblies:
         try:
             asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)]
         except:
@@ -749,179 +415,37 @@ with tab2:
             "תיאור הרכבה": asm_desc,
             "רמה בעץ": assembly_levels.get(asm_col, 0)
         }
-
-        has_any_build = False
+        has_build = False
 
         for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
+            sub_plan = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
+            raw_build = sub_plan["Build_Qty"].sum() if not sub_plan.empty else 0.0
+            wip_qty = wip_cache_ctb.get(asm_col, 0.0)
 
-            if raw_build > 0 or current_wip_qty > 0:
-                has_any_build = True
-
-            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-            if not asm_shortages.empty and raw_build > 0:
-                max_possible_build = raw_build
-                for _, s_row in asm_shortages.iterrows():
-                    req_per = s_row["Qty_Per_Assembly"]
-                    if req_per > 0:
-                        comp_pn = str(s_row["PN"]).strip()
-                        comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
-                        if not comp_match.empty:
-                            c_row = comp_match.iloc[0]
-                            base_stk = pd.to_numeric(c_row.get(STOCK_COL, 0), errors='coerce') or 0
-                            saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_ctb)
-                            total_comp_stock = base_stk + saved_stk
-                            possible_from_this = total_comp_stock / req_per
-                            max_possible_build = min(max_possible_build, possible_from_this)
-                gross_executable = max(0.0, min(raw_build, max_possible_build))
-            else:
-                gross_executable = raw_build
-
-            net_executable_qty = max(0.0, gross_executable - current_wip_qty)
+            if raw_build > 0 or wip_qty > 0:
+                has_build = True
 
             row_data[f"תכנית עבודה ({target_m})"] = raw_build
-            row_data[f"ניתן לייצור ({target_m})"] = net_executable_qty
-            row_data[f"WIP ({target_m})"] = current_wip_qty
+            row_data[f"ניתן לייצור ({target_m})"] = max(0.0, raw_build - wip_qty)
+            row_data[f"WIP ({target_m})"] = wip_qty
+            row_data[f"סטטוס ({target_m})"] = "✅ מוכן לייצור" if raw_build > 0 else "💤 ללא תוכנית"
 
-            if raw_build > 0 or current_wip_qty > 0:
-                chart_assembly_data.append({
-                    "הרכבה ותיאור": f"{asm_col} - {asm_desc}",
-                    "חודש": target_m,
-                    "תכנית עבודה": raw_build,
-                    "ניתן לייצור בפועל": net_executable_qty,
-                    "WIP": current_wip_qty
-                })
-
-        for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
-            net_build = max(0.0, raw_build - current_wip_qty)
-
-            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-            missing_items_details = []
-            for _, s_row in asm_shortages.iterrows():
-                c_pn = str(s_row["PN"]).strip()
-                c_desc = str(s_row["Description"]).strip()
-                s_qty = s_row["Total_MRP_Shortage"]
-                eta_display_str = get_first_supply_eta(c_pn, inv_cache_ctb)
-                try:
-                    eta_dt = pd.to_datetime(eta_display_str).date() if eta_display_str != "בדיקה נדרשת" else date(2099, 12, 31)
-                except:
-                    eta_dt = date(2099, 12, 31)
-                missing_items_details.append((c_pn, c_desc, s_qty, eta_dt, eta_display_str))
-
-            if missing_items_details:
-                missing_items_details.sort(key=lambda x: x[3], reverse=True)
-                formatted_missing = []
-                for c_pn, c_desc, m_qty, _, raw_eta in missing_items_details:
-                    eta_str = f" [ETA: {raw_eta}]" if raw_eta != "בדיקה נדרשת" else ""
-                    formatted_missing.append(f"{c_pn} ({c_desc[:10]}) - חסר: {m_qty:g}{eta_str}")
-                cell_text = f"❌ חסר: " + " | ".join(formatted_missing)
-            else:
-                cell_text = "✅ מוכן לייצור מלא" if net_build > 0 else "💤 ללא תוכנית ייצור"
-
-            row_data[f"סטטוס וחוסרים ({target_m})"] = cell_text
-
-        if has_any_build:
+        if has_build or selected_assembly == "הכל":
             matrix_rows.append(row_data)
 
     if matrix_rows:
-        st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, height=420)
+        st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, height=500)
     else:
-        st.info("לא נמצאו הרכבות מתוכננות בטווח החודשים שנבחר.")
-
-with tab3:
-    st.markdown('<div class="section-title">💡 סימולציית What-If (מה יקרה אם...)</div>', unsafe_allow_html=True)
-    col_w1, col_w2 = st.columns(2)
-    with col_w1:
-        sim_pn = st.selectbox("בחר מק'ט לסימולציה", sorted(df[PN_COL].dropna().astype(str).unique()), key="sim_pn")
-    with col_w2:
-        sim_extra_stock = st.number_input("תוספת כמות מדומיינת למלאי לצורך סימולציה", min_value=0.0, value=10.0, step=1.0)
-
-    if st.button("🔮 הרץ סימולציית שחרור צוואר בקבוק"):
-        sim_df = calculate_mrp_breakdown({sim_pn: sim_extra_stock}, target_yms=selected_target_yms)
-        orig_blocked = set(breakdown_df['Assembly'].unique()) if not breakdown_df.empty else set()
-        sim_blocked = set(sim_df['Assembly'].unique()) if not sim_df.empty else set()
-        freed_assemblies = orig_blocked - sim_blocked
-
-        st.success(f"סימולציה הופעלה בהצלחה עבור מק'ט `{sim_pn}` עם תוספת מדומיינת של {sim_extra_stock} יחידות.")
+        st.info("לא נמצאו נתונים להצגה.")
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית העבודה המאושרת (החל מספטמבר 2026 ואילך)</div>', unsafe_allow_html=True)
-    st.markdown("טבלה זו מוצגת ישירות מתוך תוכנית העבודה (המתחילה מספטמבר 2026). תוכל להריץ ניתוח רגישות ולעדכן את התוכנית החדשה.")
-
+    st.markdown('<div class="section-title">🎯 מטריצת תוכנית העבודה המלאה (לפי סדר התצוגה המדויק)</div>', unsafe_allow_html=True)
     if not assembly_plan_df.empty:
         pivot_plan_df = assembly_plan_df.pivot_table(
-            index=["Assembly_PN"],
-            columns="YearMonth",
-            values="Build_Qty",
-            fill_value=0.0
-        ).reset_index()
+            index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0
+        ).reindex(valid_assemblies).reset_index()
 
         pivot_plan_df.insert(1, "תיאור הרכבה", pivot_plan_df["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
-        st.dataframe(pivot_plan_df, use_container_width=True, height=320)
+        st.dataframe(pivot_plan_df, use_container_width=True, height=500)
     else:
         st.info("אין נתוני תוכנית עבודה זמינים.")
-
-    st.divider()
-    st.markdown("##### ⚙️ הרצת סימולציית ניתוח רגישות לתוכנית העבודה")
-
-    col_sens1, col_sens2, col_sens3 = st.columns([1.2, 1, 1])
-    with col_sens1:
-        sens_assembly_target = st.selectbox(
-            "בחר הרכבה לניתוח רגישות (או כלל הקווים)",
-            ["הכל (כלל ההרכבות)"] + filtered_assembly_cols,
-            format_func=lambda x: assembly_mapping.get(x, x),
-            key="sens_assembly_target"
-        )
-    with col_sens2:
-        sens_mode = st.radio("סוג שינוי", ["אחוזים (%)", "מספרי (יחידות)"], horizontal=True, key="sens_mode")
-    with col_sens3:
-        if sens_mode == "אחוזים (%)":
-            sensitivity_val = st.slider("שינוי אחוז תוכנית עבודה (%)", -50, 100, 0, 5, key="sensitivity_slider_pct")
-        else:
-            sensitivity_val = st.number_input("תוספת/הפחתה מספרית (יחידות)", -500, 500, 0, 1, key="sensitivity_number_input")
-
-    if st.button("🚀 הרץ ניתוח רגישות לתוכנית", key="run_sensitivity"):
-        simulated_plan_df = assembly_plan_df.copy()
-        if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
-            multiplier = 1.0 + (sensitivity_val / 100.0)
-            if sens_assembly_target == "הכל (כלל ההרכבות)":
-                simulated_plan_df["Raw_Build_Qty"] *= multiplier
-                simulated_plan_df["Build_Qty"] *= multiplier
-            else:
-                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
-                simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
-                simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
-        elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
-            if sens_assembly_target == "הכל (כלל ההרכבות)":
-                simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
-            else:
-                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
-                simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
-
-        st.session_state["temp_simulated_plan"] = simulated_plan_df
-        st.success("ניתוח הרגישות לתוכנית העבודה בוצע והוצג בהצלחה!")
-
-    if "temp_simulated_plan" in st.session_state:
-        st.divider()
-        st.markdown("##### 💾 שמור ועדכן את תוכנית העבודה החדשה במערכת")
-        with st.form("update_plan_form"):
-            update_confirmation = st.checkbox("האם לעדכן את תוכנית העבודה החדשה ולהחיל אותה על כלל המערכת (כולל טאב 1, טאב 2 וכו')?")
-            if st.form_submit_button("כן, עדכן ושמור את התוכנית החדשה"):
-                if update_confirmation:
-                    st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
-                    del st.session_state["temp_simulated_plan"]
-                    st.success("✅ תוכנית העבודה עודכנה בהצלחה! כל החישובים בכלל הטאבים מתבססים כעת עליה.")
-                    st.rerun()
-                else:
-                    st.warning("יש לסמן את תיבת האישור כדי לעדכן את התוכנית בפועל.")
