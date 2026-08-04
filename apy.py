@@ -1141,6 +1141,7 @@ with tab10:
                         simulated_plan_df.loc[idx_row, "Build_Qty"] = new_raw * sys_f
                 else:
                     mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                    sys_f = sys_factor_map.get(sens_assembly_target, 1)
                     for idx_row in simulated_plan_df[mask].index:
                         curr_raw = simulated_plan_df.loc[idx_row, "Raw_Build_Qty"]
                         new_raw = max(0.0, curr_raw + (sensitivity_val / sys_f))
@@ -1169,6 +1170,7 @@ with tab10:
                         simulated_plan_df.loc[idx_row, "Build_Qty"] = new_raw * sys_f
                 else:
                     mask = (simulated_plan_df["Assembly_PN"] == sens_assembly_target) & (simulated_plan_df["YearMonth"] == target_sens_month)
+                    sys_f = sys_factor_map.get(sens_assembly_target, 1)
                     for idx_row in simulated_plan_df[mask].index:
                         curr_raw = simulated_plan_df.loc[idx_row, "Raw_Build_Qty"]
                         new_raw = max(0.0, curr_raw + (sensitivity_val / sys_f))
