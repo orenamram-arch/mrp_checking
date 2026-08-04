@@ -954,6 +954,89 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None, plan_df_overr
 breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
 # ==========================================================
+# תיקון קריטי: הקצאת רכיבים משותפת בין הרכבות (לא רק בדיקה עצמאית)
+# ==========================================================
+# עד עכשיו, בדיקת "ניתן לייצור" לכל הרכבה נעשתה בנפרד לגמרי - כלומר
+# אם רכיב X עם 72 יחידות במלאי נדרש גם להרכבה A וגם להרכבה B, שתי
+# הבדיקות (העצמאיות) ראו את אותם 72 יחידות שלמות, ושתיהן היו יכולות
+# להצהיר "ניתן לייצור" - למרות שבפועל יש מספיק רק לאחת מהן, לא לשתיהן
+# יחד. זו טעות אמיתית שזוהתה במפורש (למשל PN 1982257-5, מלאי=72,
+# נדרש גם ל-1096J800-001 וגם ל-6930N141-001).
+#
+# הפתרון: מחשבים "מאגר זמינות" משותף לכל רכיב, לכל חודש, פעם אחת -
+# ועוברים על ההרכבות בסדר עדיפות (כברירת מחדל: רמת BOM נמוכה יותר,
+# כלומר קרובה יותר למוצר הסופי, מקבלת עדיפות ראשונה). כל הרכבה
+# "צורכת" בפועל מהמאגר המשותף את מה שהיא בונה, לפני שההרכבה הבאה
+# בתור נבדקת - כך שאי אפשר יותר "לספור את אותו מלאי פעמיים".
+def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_cache=None):
+    if inv_cache is None:
+        inv_cache = fetch_all_inventory_records()
+    if wip_cache is None:
+        wip_cache = fetch_wip_records()
+
+    priority_order = sorted(assemblies, key=lambda a: (assembly_levels.get(a, 0), str(a)))
+    result = {}
+
+    for ym in target_yms:
+        pool_cache = {}
+
+        def get_pool(pn):
+            if pn not in pool_cache:
+                pool_cache[pn] = get_component_available_by_month(pn, ym, inv_cache)
+            return pool_cache[pn]
+
+        month_breakdown = calculate_mrp_breakdown(target_yms=[ym])
+
+        for asm_col in priority_order:
+            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]
+            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
+            current_wip_qty = wip_cache.get(asm_col, 0.0)
+
+            if raw_build <= 0 and current_wip_qty <= 0:
+                continue
+
+            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
+
+            max_possible_build = raw_build
+            limiting_components = []
+            if not asm_shortages.empty and raw_build > 0:
+                for _, s_row in asm_shortages.iterrows():
+                    req_per = s_row["Qty_Per_Assembly"]
+                    if req_per > 0:
+                        comp_pn = str(s_row["PN"]).strip()
+                        avail = get_pool(comp_pn)
+                        possible = avail / req_per
+                        if possible < max_possible_build - 1e-9:
+                            max_possible_build = possible
+                            limiting_components = [comp_pn]
+                        elif abs(possible - max_possible_build) < 1e-9:
+                            limiting_components.append(comp_pn)
+                gross_executable = max(0.0, min(raw_build, max_possible_build))
+            else:
+                gross_executable = raw_build
+
+            net_executable_qty = max(0.0, gross_executable - current_wip_qty)
+
+            # ניכוי הצריכה בפועל של ההרכבה הזו מהמאגר המשותף, כדי
+            # שההרכבות הבאות בתור (עדיפות נמוכה יותר) יראו זמינות מוקטנת
+            if not asm_shortages.empty and gross_executable > 0:
+                for _, s_row in asm_shortages.iterrows():
+                    req_per = s_row["Qty_Per_Assembly"]
+                    if req_per > 0:
+                        comp_pn = str(s_row["PN"]).strip()
+                        pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - req_per * gross_executable)
+
+            result[(asm_col, ym)] = {
+                "raw_build": raw_build,
+                "gross_executable": gross_executable,
+                "net_executable": net_executable_qty,
+                "wip": current_wip_qty,
+                "limiting_components": limiting_components,
+            }
+
+    return result
+
+# ==========================================================
 # תיקון קריטי: בדיקת זמינות היררכית אמיתית לפני הוספה ל-WIP
 # ==========================================================
 # הכפתור בטאב ה-WIP הבטיח "בדיקת זמינות היררכית מלאה", אבל בפועל לא
@@ -1061,38 +1144,19 @@ with tab1:
 
     assemblies_to_evaluate = [a for a in valid_assemblies if selected_assembly == "הכל" or a == selected_assembly]
 
+    # תיקון קריטי: מחשבים את התוכנית המשותפת על *כל* ההרכבות (לא רק
+    # אלה שנבחרו בסינון), כדי שהקצאת המלאי המשותף תשקף גם צריכה של
+    # הרכבות שלא נבחרות כרגע לתצוגה - ורק אז מסננים לתצוגה.
+    shared_plan = compute_shared_executable_plan(selected_target_yms, valid_assemblies, inv_cache_dash, wip_cache_dash)
+
     for asm_col in assemblies_to_evaluate:
         for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_dash.get(asm_col, 0.0)
-
-            if raw_build > 0 or current_wip_qty > 0:
-                total_planned_assemblies_count += 1
-                total_planned_qty += raw_build
-
-                month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-                asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-                max_possible_build = raw_build
-                if not asm_shortages.empty and raw_build > 0:
-                    for _, s_row in asm_shortages.iterrows():
-                        req_per = s_row["Qty_Per_Assembly"]
-                        if req_per > 0:
-                            comp_pn = str(s_row["PN"]).strip()
-                            # תיקון קריטי: זמינות מתחשבת ב-ETA (מלאי + כל אספקה
-                            # שה-ETA שלה חל עד חודש היעד), לא רק מלאי סטטי -
-                            # בדיוק אותה לוגיקה שתיקנו לבדיקת ה-WIP ההיררכית,
-                            # עכשיו גם כאן ובכל מקום אחר שמחשב "ניתן לייצור".
-                            total_comp_stock = get_component_available_by_month(comp_pn, target_m, inv_cache_dash)
-                            possible_from_this = total_comp_stock / req_per
-                            max_possible_build = min(max_possible_build, possible_from_this)
-                    gross_executable = max(0.0, min(raw_build, max_possible_build))
-                else:
-                    gross_executable = raw_build
-
-                net_executable_qty = max(0.0, gross_executable - current_wip_qty)
-                total_executable_qty += net_executable_qty
+            info = shared_plan.get((asm_col, target_m))
+            if info is None:
+                continue
+            total_planned_assemblies_count += 1
+            total_planned_qty += info["raw_build"]
+            total_executable_qty += info["net_executable"]
 
     readiness_pct = (total_executable_qty / total_planned_qty * 100) if total_planned_qty > 0 else 100
     unique_shortage_count = len(dash_df['PN'].unique()) if not dash_df.empty else 0
@@ -1196,36 +1260,24 @@ with tab2:
     matrix_rows, chart_assembly_data = [], []
     assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
+    # תיקון קריטי: מחשבים על *כל* ההרכבות (לא רק המסוננות) כדי שהקצאת
+    # המלאי המשותפת בין הרכבות תהיה נכונה, ורק אז מסננים לתצוגה.
+    shared_plan_ctb = compute_shared_executable_plan(selected_target_yms, valid_assemblies, inv_cache_ctb, wip_cache_ctb)
+
     for asm_col in assemblies_to_check:
         asm_desc = df_desc.iloc[0, df.columns.get_loc(asm_col)] if asm_col in df.columns else ""
         row_data = {"קוד הרכבה": asm_col, "תיאור הרכבה": asm_desc, "רמה בעץ": assembly_levels.get(asm_col, 0)}
         has_any_build = False
 
         for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
+            info = shared_plan_ctb.get((asm_col, target_m))
+            raw_build = info["raw_build"] if info else 0.0
+            current_wip_qty = info["wip"] if info else wip_cache_ctb.get(asm_col, 0.0)
+            net_executable_qty = info["net_executable"] if info else 0.0
 
             if raw_build > 0 or current_wip_qty > 0:
                 has_any_build = True
 
-            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-            max_possible_build = raw_build
-            if not asm_shortages.empty and raw_build > 0:
-                for _, s_row in asm_shortages.iterrows():
-                    req_per = s_row["Qty_Per_Assembly"]
-                    if req_per > 0:
-                        comp_pn = str(s_row["PN"]).strip()
-                        # תיקון קריטי: אותה זמינות מתחשבת-ETA כמו בכל שאר המערכת
-                        total_comp_stock = get_component_available_by_month(comp_pn, target_m, inv_cache_ctb)
-                        max_possible_build = min(max_possible_build, total_comp_stock / req_per)
-                gross_executable = max(0.0, min(raw_build, max_possible_build))
-            else:
-                gross_executable = raw_build
-
-            net_executable_qty = max(0.0, gross_executable - current_wip_qty)
             row_data[f"תכנית ייצור ({target_m})"] = raw_build
             row_data[f"ניתן לייצור ({target_m})"] = net_executable_qty
             row_data[f"WIP ({target_m})"] = current_wip_qty
@@ -1236,23 +1288,25 @@ with tab2:
                 chart_assembly_data.append({"הרכבה ותיאור": f"{asm_col} - {asm_desc}", "חודש": target_m, "מדד": "WIP", "כמות": current_wip_qty})
 
         for target_m in selected_target_yms:
-            sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
-            current_wip_qty = wip_cache_ctb.get(asm_col, 0.0)
-            net_build = max(0.0, raw_build - current_wip_qty)
+            info = shared_plan_ctb.get((asm_col, target_m))
+            raw_build = info["raw_build"] if info else 0.0
+            gross_executable = info["gross_executable"] if info else 0.0
+            net_build = max(0.0, raw_build - (info["wip"] if info else 0.0))
+            limiting_pns = info["limiting_components"] if info else []
 
-            month_breakdown = calculate_mrp_breakdown(target_yms=[target_m])
-            asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
-
-            missing_items_details = []
-            for _, s_row in asm_shortages.iterrows():
-                c_pn, c_desc, s_qty = str(s_row["PN"]).strip(), str(s_row["Description"]).strip(), s_row["Total_MRP_Shortage"]
-                raw_eta = get_first_supply_eta(c_pn, inv_cache_ctb)
-                missing_items_details.append((c_pn, c_desc, s_qty, raw_eta))
-
-            if missing_items_details:
-                formatted_missing = [f"{c_pn} ({c_desc[:10]}) - חסר: {m_qty:g} [ETA: {raw_eta}]" for c_pn, c_desc, m_qty, raw_eta in missing_items_details]
-                row_data[f"סטטוס וחוסרים ({target_m})"] = "❌ חסר: " + " | ".join(formatted_missing)
+            if limiting_pns and gross_executable < raw_build:
+                # תיקון קריטי: הרכיבים החוסמים מגיעים עכשיו מהקצאת המלאי
+                # המשותפת (compute_shared_executable_plan) - כך שאם שתי
+                # הרכבות שולפות מאותו רכיב מוגבל, זה בא לידי ביטוי כאן
+                # ולא רק "שתיהן ניתנות לייצור במלואן" בטעות.
+                formatted_missing = []
+                for c_pn in limiting_pns:
+                    c_match = df[df[PN_COL].astype(str).str.strip() == c_pn]
+                    c_desc = str(c_match.iloc[0][DESC_COL]) if not c_match.empty else ""
+                    raw_eta = get_first_supply_eta(c_pn, inv_cache_ctb)
+                    shortage_amt = raw_build - gross_executable
+                    formatted_missing.append(f"{c_pn} ({c_desc[:10]}) - חוסם ל-{shortage_amt:g} יח' [ETA: {raw_eta}]")
+                row_data[f"סטטוס וחוסרים ({target_m})"] = "❌ חסר (כולל התחשבות במלאי משותף עם הרכבות אחרות): " + " | ".join(formatted_missing)
             else:
                 row_data[f"סטטוס וחוסרים ({target_m})"] = "✅ מוכן לייצור מלא" if net_build > 0 else "💤 ללא תוכנית ייצור"
 
