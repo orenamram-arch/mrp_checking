@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני ושמירה בענן)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם תיקון לוגיקת חישוב MRP מול פקטורי מערכת)
 """
 
 import streamlit as st
@@ -309,7 +309,6 @@ def fetch_cloud_assembly_plan():
 def save_cloud_assembly_plan(plan_df):
     try:
         records = plan_df.to_dict(orient="records")
-        # שמירה בענן (batch upsert לפי מפתח כפול אם קיים או מחיקה והכנסה מחדש)
         supabase.table("mrp_assembly_plans").delete().neq("Assembly_PN", "DUMMY").execute()
         if records:
             supabase.table("mrp_assembly_plans").upsert(records).execute()
@@ -635,11 +634,14 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
     month_plan = active_plan_df[active_plan_df["YearMonth"].isin(target_yms_tuple)]
-    plan_dict = month_plan.groupby("Assembly_PN")["Build_Qty"].sum().to_dict()
+    # תיקון קריטי: חישוב דרישות MRP מבוסס אך ורק על Raw_Build_Qty הגולמי משום שהעץ בקובץ כבר כולל את הפקטורים
+    plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
-            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - wip_qty)
+            sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_wip, 1)
+            raw_wip_qty = wip_qty / sys_factor
+            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
 
     breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
@@ -663,14 +665,14 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
             qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
             if qty_per_asm > 0:
                 added_for_this_pn = True
-                asm_build_qty = plan_dict.get(asm, 0.0)
-                required_demand = qty_per_asm * asm_build_qty
+                asm_raw_build = plan_dict.get(asm, 0.0)
+                required_demand = qty_per_asm * asm_raw_build
                 asm_desc = assembly_mapping.get(asm, asm)
 
                 breakdown_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty,
+                    "Assembly_Monthly_Build": asm_raw_build * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1),
                     "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
@@ -1218,7 +1220,6 @@ with tab10:
                 if update_confirmation:
                     st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
                     st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
-                    # שמירה גם בבסיס הנתונים ב-Supabase לענן
                     save_cloud_assembly_plan(st.session_state["temp_simulated_plan"])
                     del st.session_state["temp_simulated_plan"]
                     st.success("תוכנית הייצור עודכנה ונשמרה בהצלחה בענן ובמערכת!")
