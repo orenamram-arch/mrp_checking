@@ -955,6 +955,7 @@ breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
 # ==========================================================
 # תיקון קריטי: הקצאת רכיבים משותפת בין הרכבות (לא רק בדיקה עצמאית)
+# + מצטברת נכון על פני חודשים (לא "מתאפסת" בכל חודש בנפרד)
 # ==========================================================
 # עד עכשיו, בדיקת "ניתן לייצור" לכל הרכבה נעשתה בנפרד לגמרי - כלומר
 # אם רכיב X עם 72 יחידות במלאי נדרש גם להרכבה A וגם להרכבה B, שתי
@@ -963,11 +964,18 @@ breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 # יחד. זו טעות אמיתית שזוהתה במפורש (למשל PN 1982257-5, מלאי=72,
 # נדרש גם ל-1096J800-001 וגם ל-6930N141-001).
 #
-# הפתרון: מחשבים "מאגר זמינות" משותף לכל רכיב, לכל חודש, פעם אחת -
-# ועוברים על ההרכבות בסדר עדיפות (כברירת מחדל: רמת BOM נמוכה יותר,
-# כלומר קרובה יותר למוצר הסופי, מקבלת עדיפות ראשונה). כל הרכבה
-# "צורכת" בפועל מהמאגר המשותף את מה שהיא בונה, לפני שההרכבה הבאה
-# בתור נבדקת - כך שאי אפשר יותר "לספור את אותו מלאי פעמיים".
+# תיקון נוסף (בעקבות בדיקה חוזרת): הגרסה הקודמת של הפונקציה הזו איפסה
+# את מאגר הזמינות מחדש בתחילת כל חודש (`pool_cache = {}` בתוך הלולאה
+# על החודשים) - כלומר בדיקת "ניתן לייצור באוקטובר" לא ידעה שחלק
+# מהמלאי כבר "נאכל" על ידי תוכנית הייצור של ספטמבר. זו בדיוק אותה
+# מחלת "אי-הצטברות" שתיקנו כבר פעם אחת ברמת המלאי הידני - רק שכאן היא
+# הייתה קיימת ברמת ההקצאה בין החודשים עצמם.
+#
+# הפתרון: מעבדים את החודשים לפי סדר כרונולוגי, ושומרים "כמה כבר נצרך"
+# לכל רכיב על פני *כל* החודשים שכבר עובדו (consumed_so_far) - כך
+# שהזמינות לחודש N היא: (מלאי + כל אספקה עד חודש N, כולל ETA שכבר חל)
+# פחות כל מה שכבר נצרך בפועל בחודשים הקודמים באותו ריצה. כל הרכבה
+# בתוך אותו חודש עדיין מקבלת עדיפות לפי רמת BOM, בדיוק כמו קודם.
 def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_cache=None):
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
@@ -975,14 +983,17 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
         wip_cache = fetch_wip_records()
 
     priority_order = sorted(assemblies, key=lambda a: (assembly_levels.get(a, 0), str(a)))
+    chronological_yms = sorted(target_yms)
+    consumed_so_far = {}  # pn -> כמות שכבר נוכתה במצטבר, על פני כל החודשים שעובדו עד כה
     result = {}
 
-    for ym in target_yms:
+    for ym in chronological_yms:
         pool_cache = {}
 
         def get_pool(pn):
             if pn not in pool_cache:
-                pool_cache[pn] = get_component_available_by_month(pn, ym, inv_cache)
+                total_available_by_month = get_component_available_by_month(pn, ym, inv_cache)
+                pool_cache[pn] = max(0.0, total_available_by_month - consumed_so_far.get(pn, 0.0))
             return pool_cache[pn]
 
         month_breakdown = calculate_mrp_breakdown(target_yms=[ym])
@@ -1017,14 +1028,18 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
             net_executable_qty = max(0.0, gross_executable - current_wip_qty)
 
-            # ניכוי הצריכה בפועל של ההרכבה הזו מהמאגר המשותף, כדי
-            # שההרכבות הבאות בתור (עדיפות נמוכה יותר) יראו זמינות מוקטנת
+            # ניכוי הצריכה בפועל של ההרכבה הזו - גם מהמאגר של החודש
+            # הנוכחי (כדי שהרכבות הבאות באותו חודש יראו זמינות מוקטנת),
+            # וגם מ-consumed_so_far (כדי שהחודשים הבאים בתור יראו אותה
+            # הפחתה, ולא יתחילו מ"אפס צריכה" מחדש).
             if not asm_shortages.empty and gross_executable > 0:
                 for _, s_row in asm_shortages.iterrows():
                     req_per = s_row["Qty_Per_Assembly"]
                     if req_per > 0:
                         comp_pn = str(s_row["PN"]).strip()
-                        pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - req_per * gross_executable)
+                        consumed_amount = req_per * gross_executable
+                        pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
+                        consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
 
             result[(asm_col, ym)] = {
                 "raw_build": raw_build,
@@ -1368,6 +1383,33 @@ with tab5:
                     save_inventory_record(wip_to_close, curr_stk + closing_qty, curr_eta, "התקבל", curr_sup, f"{curr_comm} | הושלם מייצור WIP בסך {closing_qty}", "WIP Close", webhook_url)
                     delete_wip_record(wip_to_close)
                     st.rerun()
+
+        # שיפור: אפשרות למחוק הרכבה מה-WIP בלי לסגור אותה למלאי - למקרה
+        # של טעות בהזנה, ביטול ייצור מתוכנן, או תיקון כמות. בשונה מ"סגור
+        # WIP" (שמעביר את הכמות למלאי הזמין), מחיקה כאן פשוט מבטלת את
+        # רשומת ה-WIP לגמרי, בלי שום תוספת למלאי.
+        st.divider()
+        st.markdown("##### 🗑️ מחיקת הרכבה מה-WIP (ללא העברה למלאי - לביטול/תיקון טעות)")
+        col_del1, col_del2 = st.columns([3, 1])
+        with col_del1:
+            wip_to_delete = st.multiselect(
+                "בחר הרכבה/ות למחיקה מה-WIP",
+                list(wip_current.keys()),
+                format_func=lambda x: f"{x} (כמות ב-WIP: {wip_current[x]})",
+                key="wip_to_delete"
+            )
+        with col_del2:
+            confirm_delete_wip = st.checkbox("מאשר מחיקה", key="confirm_delete_wip")
+        if st.button("🗑️ מחק מה-WIP", key="delete_wip_btn"):
+            if not wip_to_delete:
+                st.warning("יש לבחור לפחות הרכבה אחת למחיקה.")
+            elif not confirm_delete_wip:
+                st.warning("יש לסמן 'מאשר מחיקה' לפני שמחיקה מתבצעת.")
+            else:
+                for asm_pn in wip_to_delete:
+                    delete_wip_record(asm_pn)
+                st.success(f"נמחקו {len(wip_to_delete)} הרכבות מה-WIP.")
+                st.rerun()
 
     st.divider()
     st.markdown("##### ➕ צירוף הרכבה חדשה ל-WIP")
