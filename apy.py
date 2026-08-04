@@ -719,6 +719,36 @@ st.set_page_config(
 )
 
 # ==========================================================
+# AUTHENTICATION GATE (שכבת הגנה למערכת)
+# ==========================================================
+def check_password():
+    def password_entered():
+        if st.secrets["passwords"].get(st.session_state["username"]) == st.session_state["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.markdown("### 🔐 כניסה למערכת מגדל בקרת חוסרים (MRP)")
+        st.text_input("שם משתמש", key="username")
+        st.text_input("סיסמה", type="password", key="password")
+        st.button("התחבר", on_click=password_entered)
+        return False
+    elif not st.session_state["password_correct"]:
+        st.markdown("### 🔐 כניסה למערכת מגדל בקרת חוסרים (MRP)")
+        st.text_input("שם משתמש", key="username")
+        st.text_input("סיסמה", type="password", key="password")
+        st.button("התחבר", on_click=password_entered)
+        st.error("😕 שם משתמש או סיסמה שגויים")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()  # עוצר את טעינת האפליקציה לחלוטין עד להזנת פרטים נכונים
+# ==========================================================
 # GLOBAL THEME / CSS
 # ==========================================================
 PRIMARY = "#4F46E5"
@@ -937,8 +967,8 @@ COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#
 # ==========================================================
 # SUPABASE SETUP & FAST CACHED STORAGE
 # ==========================================================
-SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
-SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
 
 @st.cache_resource
 def init_supabase() -> Client:
