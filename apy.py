@@ -1862,9 +1862,67 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
     return blockers
 
 # ==========================================================
+# שיפור: קיבולת ייצור מקסימלית תיאורטית לכל הרכבה (לא קשור לתוכנית)
+# ==========================================================
+# זו פונקציה חדשה ונפרדת - היא לא נוגעת ולא משנה שום דבר בלוגיקה
+# הקיימת (calculate_mrp_breakdown, compute_shared_executable_plan,
+# check_hierarchical_ctb נשארים בדיוק כפי שהם). היא רק *משתמשת* באותם
+# אבני-בניין שכבר קיימים ומאומתים (get_component_available_by_month,
+# ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN) כדי לענות על שאלה שונה: "כמה
+# יחידות של הרכבה X היה אפשר לייצר תיאורטית עד חודש Y, בלי קשר לתוכנית
+# הייצור המתוכננת בפועל" - כלומר קיבולת מקסימלית, לא "ניתן לייצור
+# מתוך התוכנית". החישוב הוא לכל הרכבה בנפרד (לא הקצאה משותפת בין
+# הרכבות מתחרות - ראו הסבר בטאב עצמו).
+def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _visited=None):
+    if inv_cache is None:
+        inv_cache = fetch_all_inventory_records()
+    if wip_cache is None:
+        wip_cache = fetch_wip_records()
+    if _visited is None:
+        _visited = set()
+    if asm_pn in _visited:
+        return float('inf'), None  # מגן מפני לולאה מעגלית בעץ ה-BOM (לא אמור לקרות)
+    _visited = _visited | {asm_pn}
+
+    max_qty = float('inf')
+    limiting_component = None
+
+    if asm_pn in df.columns:
+        for _, row in df.iterrows():
+            qty_per = safe_num(row[asm_pn])
+            if qty_per <= 0:
+                continue
+            comp_pn = str(row[PN_COL]).strip()
+            base_stock_check = safe_num(row[STOCK_COL])
+            if base_stock_check >= 9000000:
+                continue  # מק"ט של הרכבה אחרת - מטופל דרך תתי-ההרכבות למטה
+            avail = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
+            possible = avail / qty_per
+            if possible < max_qty:
+                max_qty = possible
+                limiting_component = comp_pn
+
+    for child_pn in ASSEMBLY_CHILDREN.get(asm_pn, []):
+        child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
+        qty_per_parent = child_info.get("qty_per_parent", 1.0)
+        if qty_per_parent <= 0:
+            continue
+        child_wip = wip_cache.get(child_pn, 0.0)
+        child_max_new, _ = compute_max_buildable(child_pn, target_ym, inv_cache, wip_cache, _visited)
+        child_total_available = child_wip + child_max_new
+        possible_from_child = child_total_available / qty_per_parent
+        if possible_from_child < max_qty:
+            max_qty = possible_from_child
+            limiting_component = f"{child_pn} (תת-הרכבה)"
+
+    if max_qty == float('inf'):
+        max_qty = 0.0
+    return max(0.0, max_qty), limiting_component
+
+# ==========================================================
 # TABS DEFINITION (10 הטאבים המקוריים + טאב חדש לעריכת ETA מרוכזת)
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
@@ -1875,7 +1933,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "↩️ ניהול UNDO",
     "📦 ניהול מלאי מעודכן",
     "🎯 ניתוח רגישות ותוכנית",
-    "✏️ עריכת ETA מרוכזת"
+    "✏️ עריכת ETA מרוכזת",
+    "🏆 קיבולת ייצור מקסימלית"
 ])
 
 with tab1:
@@ -1977,7 +2036,7 @@ with tab1:
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with col_g2:
-            st.markdown("##### 💰 TOP 10 חוסרים לפי ערך כספי (מחיר יחידה × כמות חסרה)")
+            st.markdown("##### 💰 TOP 10 חוסרים לפי ערך כספי ($ , מחיר יחידה × כמות חסרה)")
             # שיפור: עכשיו כשהספקים מעודכנים, הגרף מדרג את 10 הפריטים
             # החסרים עם הערך הכספי הגבוה ביותר (Total_MRP_Shortage *
             # מחיר יחידה מעמודה AY) - נותן תמונה עסקית ("איפה הכסף
@@ -1992,10 +2051,10 @@ with tab1:
                     y=top10_value_df["label"],
                     x=top10_value_df["Shortage_Value"],
                     textposition="inside",
-                    texttemplate="₪%{value:,.0f}",
+                    texttemplate="$%{value:,.0f}",
                     marker={"color": top10_value_df["Shortage_Value"], "colorscale": "Reds"},
                     connector={"line": {"color": PRIMARY, "width": 1}},
-                    hovertemplate="<b>%{y}</b><br>ערך חוסר: ₪%{value:,.0f}<extra></extra>"
+                    hovertemplate="<b>%{y}</b><br>ערך חוסר: $%{value:,.0f}<extra></extra>"
                 ))
                 fig_top10.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_top10, use_container_width=True)
@@ -2013,7 +2072,7 @@ with tab1:
         fig_sup = px.bar(
             supplier_agg, x="Supplier", y="Total_Value", color="Supplier",
             color_discrete_sequence=COLOR_SEQ, hover_data=["Item_Count", "Total_Shortage"],
-            labels={"Total_Value": "סה\"כ ערך חוסר (₪)", "Supplier": "ספק"}
+            labels={"Total_Value": "סה\"כ ערך חוסר ($)", "Supplier": "ספק"}
         )
         fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=320, margin=dict(t=10, b=10, l=10, r=10), showlegend=False, xaxis_tickangle=-30)
         st.plotly_chart(fig_sup, use_container_width=True)
@@ -2622,3 +2681,76 @@ with tab11:
                 st.rerun()
             else:
                 st.info("לא זוהו שינויים לשמירה.")
+
+with tab12:
+    # ==========================================================
+    # טאב חדש: קיבולת ייצור מקסימלית תיאורטית לכל הרכבה
+    # ==========================================================
+    # שימו לב: זו שאלה שונה מ"ניתן לייצור" בטאב 2 (Smart CTB). טאב 2
+    # עונה על "כמה מתוך התוכנית *המתוכננת* אפשר לבנות החודש" (מוגבל
+    # ע"י raw_build ומחולק בין הרכבות מתחרות לפי סדר עדיפות). הטאב הזה
+    # עונה על שאלה עצמאית: "כמה יחידות של הרכבה X היה אפשר לייצר בכלל
+    # עד חודש Y, בלי קשר לתוכנית" - קיבולת מקסימלית תיאורטית.
+    #
+    # חשוב: זה מחושב לכל הרכבה *בנפרד* (לא הקצאת מלאי משותפת בין
+    # הרכבות מתחרות, כמו ב-compute_shared_executable_plan) - כי "קיבולת
+    # מקסימלית" לכל הרכבות יחד היא שאלה שאין לה תשובה יחידה כשכמה
+    # הרכבות מתחרות על אותם רכיבים (זה תלוי בסדר עדיפות שרירותי). לכן
+    # המספר כאן מייצג: "אם היינו מרכזים את כל המלאי הזמין רק בהרכבה
+    # הזו בלבד, כמה אפשר היה לבנות" - תקרת קיבולת עליונה לכל הרכבה,
+    # לא תחזית מציאותית אם כמה הרכבות ייבנו יחד באותו חודש.
+    #
+    # הלוגיקה עצמה (get_component_available_by_month, ASSEMBLY_BOM_TREE)
+    # זהה לחלוטין למה שכבר תוקן ואומת בטאבים אחרים - כולל ETA (זמין רק
+    # מחודש לפני), ניכוי מלאי שכבר נצרך ב-WIP, והיררכיית BOM רקורסיבית.
+    st.markdown('<div class="section-title">🏆 קיבולת ייצור מקסימלית לכל הרכבה</div>', unsafe_allow_html=True)
+    st.caption(
+        "כמה יחידות מכל הרכבה ניתן היה לייצר תיאורטית עד חודש נתון, בהתבסס על מלאי + אספקה עם ETA שכבר חל + ניכוי מה שכבר נצרך ב-WIP - "
+        "ללא קשר לתוכנית הייצור המתוכננת. חישוב זה מבוצע לכל הרכבה בנפרד (תקרת קיבולת עליונה), ולא מחלק מלאי משותף בין הרכבות כמו בטאב 'תוכנית ייצור'."
+    )
+
+    cap_target_month_label = st.selectbox(
+        "עד איזה חודש לבדוק זמינות (כולל אספקה עם ETA עד לפני חודש זה)",
+        list(month_options.keys()),
+        index=list(month_options.keys()).index(selected_month_label) if selected_month_label in month_options else 0,
+        key="cap_target_month_label"
+    )
+    cap_target_ym = pd.to_datetime(month_options[cap_target_month_label]).strftime("%Y-%m")
+
+    inv_cache_cap = fetch_all_inventory_records()
+    wip_cache_cap = fetch_wip_records()
+
+    cap_rows = []
+    for asm_col in valid_assemblies:
+        max_qty, limiting = compute_max_buildable(asm_col, cap_target_ym, inv_cache_cap, wip_cache_cap)
+        current_wip_qty = wip_cache_cap.get(asm_col, 0.0)
+        cap_rows.append({
+            "קוד הרכבה": asm_col,
+            "תיאור": assembly_mapping.get(asm_col, asm_col),
+            "רמה בעץ": assembly_levels.get(asm_col, 0),
+            "קיבולת מקסימלית (יח')": round(max_qty, 1),
+            "כבר ב-WIP (יח')": current_wip_qty,
+            "רכיב/הרכבה מגבילים": limiting if limiting else "—"
+        })
+
+    cap_df = pd.DataFrame(cap_rows).sort_values(["רמה בעץ", "קיבולת מקסימלית (יח')"], ascending=[True, False])
+
+    col_cap1, col_cap2 = st.columns([1, 1])
+    with col_cap1:
+        st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", cap_df.iloc[0]["קוד הרכבה"] if not cap_df.empty else "—",
+                   f"{cap_df.iloc[0]['קיבולת מקסימלית (יח\')']:,.0f} יח'" if not cap_df.empty else "")
+    with col_cap2:
+        bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()] if not cap_df.empty else None
+        st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bottleneck_row["קוד הרכבה"] if bottleneck_row is not None else "—",
+                   f"{bottleneck_row['קיבולת מקסימלית (יח\')']:,.0f} יח'" if bottleneck_row is not None else "")
+
+    fig_cap = px.bar(
+        cap_df.sort_values("קיבולת מקסימלית (יח')", ascending=True),
+        x="קיבולת מקסימלית (יח')", y="קוד הרכבה", orientation='h',
+        color="קיבולת מקסימלית (יח')", color_continuous_scale="Blues",
+        hover_data=["תיאור", "רכיב/הרכבה מגבילים"]
+    )
+    fig_cap.update_layout(template=PLOTLY_TEMPLATE, height=max(400, 28 * len(cap_df)), margin=dict(t=10, b=10, l=10, r=10))
+    st.plotly_chart(fig_cap, use_container_width=True)
+
+    st.dataframe(cap_df, use_container_width=True, height=420)
