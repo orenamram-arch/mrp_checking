@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה, מהירה ומתוקנת עם היררכיית הרכבות מדויקת)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם אישור שמירת ניתוח רגישות)
 """
 
 import streamlit as st
@@ -1128,22 +1128,32 @@ with tab10:
                 simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
 
         st.session_state["temp_simulated_plan"] = simulated_plan_df
-        st.success("ניתוח הרגישות בוצע בהצלחה!")
+        st.success("ניתוח הרגישות בוצע בהצלחה! צפה בתוצאות למטה ומאשר לשמור במידת הצורך.")
 
     if "temp_simulated_plan" in st.session_state:
         st.divider()
+        st.markdown("##### 📋 תצוגה מקדימה של התוכנית הסימולטיבית (לאחר ניתוח רגישות):")
+        preview_pivot = st.session_state["temp_simulated_plan"].pivot_table(index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0).reset_index()
+        preview_pivot.insert(1, "רמה", preview_pivot["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
+        preview_pivot.insert(2, "תיאור הרכבה", preview_pivot["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        preview_pivot = preview_pivot.sort_values(by=["רמה", "Assembly_PN"])
+        st.dataframe(preview_pivot, use_container_width=True, height=240)
+
         with st.form("update_plan_form"):
-            update_confirmation = st.checkbox("האם אתה מאשר לשמור את התוכנית החדשה ולהחיל אותה על כלל המערכת?")
-            if st.form_submit_button("כן, שמור ועדכן את תוכנית העבודה החדשה"):
+            update_confirmation = st.checkbox("❓ האם אתה מאשר לשמור את השינויים ולהחיל את תוכנית הייצור החדשה על כלל המערכת?")
+            if st.form_submit_button("💾 שמור שינויים ועדכן את תוכנית העבודה"):
                 if update_confirmation:
                     st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
                     st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
                     del st.session_state["temp_simulated_plan"]
+                    st.success("תוכנית הייצור עודכנה ונשמרה בהצלחה במערכת!")
                     st.rerun()
+                else:
+                    st.warning("יש לסמן את תיבת האישור כדי לשמור את השינויים.")
 
     if "previous_approved_plan" in st.session_state:
         st.divider()
-        st.markdown("##### 📊 השוואה בין תוכנית הייצור המקורית לחדשה")
+        st.markdown("##### 📊 השוואה בין תוכנית הייצור הקודמת לחדשה")
         orig_plan_pivot = st.session_state["previous_approved_plan"].pivot_table(index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0)
         new_plan_pivot = assembly_plan_df.pivot_table(index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0)
         comparison_diff = new_plan_pivot.sub(orig_plan_pivot, fill_value=0.0).reset_index()
