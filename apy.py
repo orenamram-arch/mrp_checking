@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני לפי הרכבה וחודש)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מתוקנת לניתוח רגישות פרטני לפי הרכבה וחודש)
 """
 
 import streamlit as st
@@ -321,7 +321,7 @@ DESC_COL = df.columns[4]
 ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
 ASSEMBLY_COLS = df.columns[10:36].tolist()
-MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
+MONTH_COLS = df.columns[108:].tolist() if len(df.columns) > 108 else []
 
 valid_assemblies = []
 for col in ASSEMBLY_COLS:
@@ -339,7 +339,7 @@ for col in valid_assemblies:
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
 if "custom_assembly_plan_df" not in st.session_state:
-    header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
+    header_dates = df_raw.iloc[2, 108:].values if df_raw.shape[1] > 108 else []
     plan_rows = []
 
     for r in range(3, df_raw.shape[0]):
@@ -357,14 +357,13 @@ if "custom_assembly_plan_df" not in st.session_state:
                             if q_val > 0:
                                 dt = pd.to_datetime(date_val)
                                 ym_str = dt.strftime("%Y-%m")
-                                if dt.month >= 9 or ym_str >= "2026-09":
-                                    displayed_build_qty = q_val * system_multiplier
-                                    plan_rows.append({
-                                        "Assembly_PN": clean_asm_pn,
-                                        "YearMonth": ym_str,
-                                        "Build_Qty": displayed_build_qty,
-                                        "Raw_Build_Qty": q_val
-                                    })
+                                displayed_build_qty = q_val * system_multiplier
+                                plan_rows.append({
+                                    "Assembly_PN": clean_asm_pn,
+                                    "YearMonth": ym_str,
+                                    "Build_Qty": displayed_build_qty,
+                                    "Raw_Build_Qty": q_val
+                                })
                         except:
                             pass
     st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
@@ -433,8 +432,7 @@ for m in MONTH_COLS:
         try:
             dt = pd.to_datetime(m)
             m_ym = dt.strftime("%Y-%m")
-            if m_ym >= "2026-09":
-                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
         except:
             pass
 
@@ -443,8 +441,7 @@ if not month_options:
         if pd.notnull(m):
             try:
                 dt = pd.to_datetime(m)
-                if dt.month >= 9 or dt.strftime("%Y-%m") >= "2026-09":
-                    month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
             except:
                 pass
 
@@ -456,7 +453,7 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=12, value=1, key="num_months_ahead")
 
 level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)), key=lambda x: int(x) if x.isdigit() else 0)
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
@@ -1126,7 +1123,7 @@ with tab10:
                     simulated_plan_df["Raw_Build_Qty"] *= multiplier
                     simulated_plan_df["Build_Qty"] *= multiplier
                 else:
-                    mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                    mask = simulated_plan_df["Assembly_PN"].astype(str).str.contains(sens_assembly_target, case=False, na=False)
                     simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
                     simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
             elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
@@ -1134,12 +1131,16 @@ with tab10:
                     simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
                     simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
                 else:
-                    mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
-                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+                    mask = simulated_plan_df["Assembly_PN"].astype(str).str.contains(sens_assembly_target, case=False, na=False)
+                    for idx_row in simulated_plan_df[mask].index:
+                        asm_code = str(simulated_plan_df.at[idx_row, "Assembly_PN"])
+                        sys_fac = ASSEMBLY_SYSTEM_FACTORS.get(asm_code, 1)
+                        curr_raw = simulated_plan_df.at[idx_row, "Raw_Build_Qty"]
+                        new_raw = max(0.0, curr_raw + (sensitivity_val / sys_fac))
+                        simulated_plan_df.at[idx_row, "Raw_Build_Qty"] = new_raw
+                        simulated_plan_df.at[idx_row, "Build_Qty"] = new_raw * sys_fac
         else:
             # שינוי לחודש ספציפי בלבד
-            sys_factor_map = ASSEMBLY_SYSTEM_FACTORS
             if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
                 multiplier = 1.0 + (sensitivity_val / 100.0)
                 if sens_assembly_target == "הכל (כלל ההרכבות)":
@@ -1147,18 +1148,28 @@ with tab10:
                     simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
                     simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
                 else:
-                    mask = (simulated_plan_df["Assembly_PN"] == sens_assembly_target) & (simulated_plan_df["YearMonth"] == target_sens_month)
+                    mask = (simulated_plan_df["Assembly_PN"].astype(str).str.contains(sens_assembly_target, case=False, na=False)) & (simulated_plan_df["YearMonth"] == target_sens_month)
                     simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
                     simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
             elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
                 if sens_assembly_target == "הכל (כלל ההרכבות)":
                     mask = simulated_plan_df["YearMonth"] == target_sens_month
-                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+                    for idx_row in simulated_plan_df[mask].index:
+                        asm_code = str(simulated_plan_df.at[idx_row, "Assembly_PN"])
+                        sys_fac = ASSEMBLY_SYSTEM_FACTORS.get(asm_code, 1)
+                        curr_raw = simulated_plan_df.at[idx_row, "Raw_Build_Qty"]
+                        new_raw = max(0.0, curr_raw + (sensitivity_val / sys_fac))
+                        simulated_plan_df.at[idx_row, "Raw_Build_Qty"] = new_raw
+                        simulated_plan_df.at[idx_row, "Build_Qty"] = new_raw * sys_fac
                 else:
-                    mask = (simulated_plan_df["Assembly_PN"] == sens_assembly_target) & (simulated_plan_df["YearMonth"] == target_sens_month)
-                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+                    mask = (simulated_plan_df["Assembly_PN"].astype(str).str.contains(sens_assembly_target, case=False, na=False)) & (simulated_plan_df["YearMonth"] == target_sens_month)
+                    for idx_row in simulated_plan_df[mask].index:
+                        asm_code = str(simulated_plan_df.at[idx_row, "Assembly_PN"])
+                        sys_fac = ASSEMBLY_SYSTEM_FACTORS.get(asm_code, 1)
+                        curr_raw = simulated_plan_df.at[idx_row, "Raw_Build_Qty"]
+                        new_raw = max(0.0, curr_raw + (sensitivity_val / sys_fac))
+                        simulated_plan_df.at[idx_row, "Raw_Build_Qty"] = new_raw
+                        simulated_plan_df.at[idx_row, "Build_Qty"] = new_raw * sys_fac
 
         st.session_state["temp_simulated_plan"] = simulated_plan_df
         st.success("ניתוח הרגישות בוצע בהצלחה! צפה בתוצאות למטה ומאשר לשמור במידת הצורך.")
