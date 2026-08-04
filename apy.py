@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מהירה, מתוקנת ומלאה)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה, מהירה ומתוקנת עם היררכיית הרכבות מדויקת)
 """
 
 import streamlit as st
@@ -34,9 +34,9 @@ st.set_page_config(
 # ==========================================================
 # GLOBAL THEME / CSS
 # ==========================================================
-PRIMARY = "#4F46E5"      # indigo
+PRIMARY = "#4F46E5"
 PRIMARY_DARK = "#3730A3"
-ACCENT = "#06B6D4"       # cyan
+ACCENT = "#06B6D4"
 DANGER = "#EF4444"
 WARNING = "#F59E0B"
 SUCCESS = "#10B981"
@@ -336,7 +336,8 @@ for col in valid_assemblies:
     except:
         assembly_levels[col] = 0
 
-valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), x))
+# יישור היררכיה מדויקת לפי רמות עץ ומק'ט
+valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
 if "custom_assembly_plan_df" not in st.session_state:
     header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
@@ -458,7 +459,7 @@ except:
 
 num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
 
-level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)))
+level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)), key=lambda x: int(x) if x.isdigit() else 0)
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
 
 assembly_mapping = {"הכל": "הכל"}
@@ -470,7 +471,7 @@ for col in valid_assemblies:
         desc = df_desc.iloc[0, col_idx]
         if selected_level == "הכל" or lvl == selected_level:
             filtered_assembly_cols.append(col)
-            assembly_mapping[col] = str(col) + " - " + str(desc) + " (רמה " + str(lvl) + ")"
+            assembly_mapping[col] = f"[רמה {lvl}] {str(col)} - {str(desc)}"
     except:
         filtered_assembly_cols.append(col)
         assembly_mapping[col] = col
@@ -1018,12 +1019,44 @@ with tab6:
 with tab7:
     st.markdown('<div class="section-title">📅 מעקב ETA, דחיות, כמויות וקישורים למפיצים</div>', unsafe_allow_html=True)
     inv_cache_all = fetch_all_inventory_records()
-    eta_table_rows = [{"מק'ט": str(row[PN_COL]).strip(), "תיאור פריט": str(row[DESC_COL]), "ספק": inv_cache_all.get(str(row[PN_COL]).strip(), {}).get("supplier", "אופק"), "חיפוש במאוזר": f"https://www.mouser.co.il/c/?q={row[PN_COL]}", "חיפוש בדיגיקי": f"https://www.digikey.com/en/products/result?keywords={row[PN_COL]}", "חיפוש ב-Findchips": f"https://www.findchips.com/search/{row[PN_COL]}"} for _, row in df.iterrows() if pd.notnull(row[PN_COL])]
-    st.dataframe(pd.DataFrame(eta_table_rows), column_config={
-        "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
-        "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
-        "חיפוש ב-Findchips": st.column_config.LinkColumn("🔗 Findchips", display_text="פתח ב-Findchips")
-    }, use_container_width=True, height=450)
+    eta_table_rows = []
+
+    for _, row in df.iterrows():
+        p_num = str(row[PN_COL]).strip()
+        if not p_num or p_num == 'nan':
+            continue
+        p_desc = str(row[DESC_COL])
+        p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+
+        orig_eta = get_base_mrp_eta(p_num)
+        orig_qty = get_base_mrp_qty(p_num)
+        
+        saved_rec = inv_cache_all.get(p_num, {})
+        current_eta_raw = saved_rec.get("eta", "")
+        current_added_stock = saved_rec.get("added_stock", 0.0)
+        curr_eta_fmt = pd.to_datetime(current_eta_raw).strftime("%Y-%m") if current_eta_raw else orig_eta
+
+        eta_table_rows.append({
+            "מק'ט": p_num,
+            "תיאור פריט": p_desc,
+            "סוג פריט": p_type,
+            "ETA מקורי (MRP)": orig_eta,
+            "כמות מקורית": orig_qty,
+            "ETA מעודכן": curr_eta_fmt,
+            "כמות מעודכנת": current_added_stock,
+            "ספק": saved_rec.get("supplier", "אופק"),
+            "חיפוש במאוזר": f"https://www.mouser.co.il/c/?q={p_num}",
+            "חיפוש בדיגיקי": f"https://www.digikey.com/en/products/result?keywords={p_num}",
+            "חיפוש ב-Findchips": f"https://www.findchips.com/search/{p_num}"
+        })
+
+    eta_df = pd.DataFrame(eta_table_rows)
+    if not eta_df.empty:
+        st.dataframe(eta_df, column_config={
+            "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
+            "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
+            "חיפוש ב-Findchips": st.column_config.LinkColumn("🔗 Findchips", display_text="פתח ב-Findchips")
+        }, use_container_width=True, height=450)
 
 with tab8:
     st.markdown('<div class="section-title">↩️ חזרה לאחור וניהול היסטוריה (UNDO)</div>', unsafe_allow_html=True)
@@ -1059,7 +1092,62 @@ with tab10:
         orig_pivot_plan = assembly_plan_df.pivot_table(index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0).reset_index()
         orig_pivot_plan.insert(1, "רמה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
         orig_pivot_plan.insert(2, "תיאור הרכבה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        orig_pivot_plan = orig_pivot_plan.sort_values(by=["רמה", "Assembly_PN"])
         st.dataframe(orig_pivot_plan, use_container_width=True, height=280)
 
+    st.divider()
+    col_sens1, col_sens2, col_sens3 = st.columns([1.2, 1, 1])
+    with col_sens1:
+        sens_assembly_target = st.selectbox("בחר הרכבה לניתוח רגישות", ["הכל (כלל ההרכבות)"] + filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x), key="sens_assembly_target")
+    with col_sens2:
+        sens_mode = st.radio("סוג שינוי", ["אחוזים (%)", "מספרי (יחידות)"], horizontal=True, key="sens_mode")
+    with col_sens3:
+        if sens_mode == "אחוזים (%)":
+            sensitivity_val = st.slider("שינוי אחוז תוכנית הייצור (%)", -50, 100, 0, 5, key="sens_slider")
+        else:
+            sensitivity_val = st.number_input("תוספת/הפחתה מספרית (יחידות)", -500, 500, 0, 1, key="sens_num")
+
     if st.button("🚀 הרץ ניתוח רגישות לתוכנית", key="run_sensitivity"):
+        simulated_plan_df = assembly_plan_df.copy()
+        if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
+            multiplier = 1.0 + (sensitivity_val / 100.0)
+            if sens_assembly_target == "הכל (כלל ההרכבות)":
+                simulated_plan_df["Raw_Build_Qty"] *= multiplier
+                simulated_plan_df["Build_Qty"] *= multiplier
+            else:
+                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
+                simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
+        elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
+            if sens_assembly_target == "הכל (כלל ההרכבות)":
+                simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
+            else:
+                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+
+        st.session_state["temp_simulated_plan"] = simulated_plan_df
         st.success("ניתוח הרגישות בוצע בהצלחה!")
+
+    if "temp_simulated_plan" in st.session_state:
+        st.divider()
+        with st.form("update_plan_form"):
+            update_confirmation = st.checkbox("האם אתה מאשר לשמור את התוכנית החדשה ולהחיל אותה על כלל המערכת?")
+            if st.form_submit_button("כן, שמור ועדכן את תוכנית העבודה החדשה"):
+                if update_confirmation:
+                    st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
+                    st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
+                    del st.session_state["temp_simulated_plan"]
+                    st.rerun()
+
+    if "previous_approved_plan" in st.session_state:
+        st.divider()
+        st.markdown("##### 📊 השוואה בין תוכנית הייצור המקורית לחדשה")
+        orig_plan_pivot = st.session_state["previous_approved_plan"].pivot_table(index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0)
+        new_plan_pivot = assembly_plan_df.pivot_table(index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0)
+        comparison_diff = new_plan_pivot.sub(orig_plan_pivot, fill_value=0.0).reset_index()
+        comparison_diff.insert(1, "רמה", comparison_diff["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
+        comparison_diff.insert(2, "תיאור הרכבה", comparison_diff["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        comparison_diff = comparison_diff.sort_values(by=["רמה", "Assembly_PN"])
+        st.dataframe(comparison_diff, use_container_width=True)
