@@ -1057,6 +1057,7 @@ PN_COL = df.columns[1]
 DESC_COL = df.columns[4]
 ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
+PRICE_COL = df.columns[50] if len(df.columns) > 50 else df.columns[-1]  # עמודה AY - מחיר יחידה (PRICE_CALC)
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
 
@@ -1615,6 +1616,10 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
 
         total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
+        # שיפור: מחיר יחידה מעמודה AY (PRICE_COL) וערך כספי של החוסר -
+        # לשימוש בגרף "TOP 10 חוסרים לפי ערך" בדשבורד.
+        unit_price = safe_num(row[PRICE_COL])
+        shortage_value = total_mrp_shortage * unit_price
 
         mouser_link = f"https://www.mouser.co.il/c/?q={pn}"
         digikey_link = f"https://www.digikey.com/en/products/result?keywords={pn}"
@@ -1644,6 +1649,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
                     "Assembly_Monthly_Build": asm_raw_build * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1),
                     "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
+                    "Unit_Price": unit_price, "Shortage_Value": shortage_value,
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
                 })
 
@@ -1652,6 +1658,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
                 "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                 "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
                 "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
+                "Unit_Price": unit_price, "Shortage_Value": shortage_value,
                 "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
             })
 
@@ -1970,26 +1977,52 @@ with tab1:
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with col_g2:
-            st.markdown("##### 🏭 התפלגות חוסרים לפי ספק")
-            # תיקון: אותו דילול PN ייחודי, ובנוסף מוצג כגרף עמודות ממוין
-            # (לא עוגה) - קריא יותר כשיש הרבה ספקים שונים, ומדגיש מיד מי
-            # הספק עם החוסר הגדול ביותר.
-            supplier_agg = dash_df_unique_pn.groupby("Supplier", as_index=False).agg(
-                Total_Shortage=("Total_MRP_Shortage", "sum"),
-                Item_Count=("PN", "nunique")
-            ).sort_values("Total_Shortage", ascending=False)
-            fig_sup = px.bar(
-                supplier_agg, x="Supplier", y="Total_Shortage", color="Supplier",
-                color_discrete_sequence=COLOR_SEQ, hover_data=["Item_Count"],
-                labels={"Total_Shortage": "סה\"כ חוסר (יח')", "Supplier": "ספק"}
-            )
-            fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10), showlegend=False, xaxis_tickangle=-30)
-            st.plotly_chart(fig_sup, use_container_width=True)
+            st.markdown("##### 💰 TOP 10 חוסרים לפי ערך כספי (מחיר יחידה × כמות חסרה)")
+            # שיפור: עכשיו כשהספקים מעודכנים, הגרף מדרג את 10 הפריטים
+            # החסרים עם הערך הכספי הגבוה ביותר (Total_MRP_Shortage *
+            # מחיר יחידה מעמודה AY) - נותן תמונה עסקית ("איפה הכסף
+            # באמת נתקע"), לא רק כמות יחידות גולמית. מוצג כגרף משפך
+            # (funnel) מדורג, עם שם הספק וה-PN בכל שלב.
+            top10_value_df = dash_df_unique_pn[dash_df_unique_pn["Shortage_Value"] > 0].sort_values("Shortage_Value", ascending=False).head(10)
+            if not top10_value_df.empty:
+                top10_value_df = top10_value_df.assign(
+                    label=top10_value_df.apply(lambda r: f"{r['PN']} ({str(r['Supplier'])[:14]})", axis=1)
+                )
+                fig_top10 = go.Figure(go.Funnel(
+                    y=top10_value_df["label"],
+                    x=top10_value_df["Shortage_Value"],
+                    textposition="inside",
+                    texttemplate="₪%{value:,.0f}",
+                    marker={"color": top10_value_df["Shortage_Value"], "colorscale": "Reds"},
+                    connector={"line": {"color": PRIMARY, "width": 1}},
+                    hovertemplate="<b>%{y}</b><br>ערך חוסר: ₪%{value:,.0f}<extra></extra>"
+                ))
+                fig_top10.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
+                st.plotly_chart(fig_top10, use_container_width=True)
+            else:
+                st.info("אין נתוני מחיר זמינים לחישוב ערך כספי של החוסרים בטווח הנוכחי.")
+
+        st.markdown("##### 🏭 התפלגות חוסרים לפי ספק")
+        # דילול PN ייחודי (Total_MRP_Shortage הוא ערך ברמת הפריט, זהה
+        # בכל השורות הכפולות שלו לפי הרכבה) + גרף עמודות ממוין.
+        supplier_agg = dash_df_unique_pn.groupby("Supplier", as_index=False).agg(
+            Total_Shortage=("Total_MRP_Shortage", "sum"),
+            Total_Value=("Shortage_Value", "sum"),
+            Item_Count=("PN", "nunique")
+        ).sort_values("Total_Value", ascending=False)
+        fig_sup = px.bar(
+            supplier_agg, x="Supplier", y="Total_Value", color="Supplier",
+            color_discrete_sequence=COLOR_SEQ, hover_data=["Item_Count", "Total_Shortage"],
+            labels={"Total_Value": "סה\"כ ערך חוסר (₪)", "Supplier": "ספק"}
+        )
+        fig_sup.update_layout(template=PLOTLY_TEMPLATE, height=320, margin=dict(t=10, b=10, l=10, r=10), showlegend=False, xaxis_tickangle=-30)
+        st.plotly_chart(fig_sup, use_container_width=True)
 
         st.markdown('<div class="section-title">📋 טבלת פירוט ניהולית עם אפשרות ייצוא וקישורי חיפוש מלאי</div>', unsafe_allow_html=True)
         display_df = dash_df[[
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc",
             "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage",
+            "Unit_Price", "Shortage_Value",
             "חיפוש במאוזר", "חיפוש בדיגיקי", "חיפוש ב-Findchips"
         ]].rename(columns={
             "PN": "מק'ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
