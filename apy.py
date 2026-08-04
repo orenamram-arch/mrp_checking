@@ -731,7 +731,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.markdown("### 🔐 כניסה למערכת מגדל בקרת חוסרים (MRP)")
+        st.markdown("### 🔐 כניסה למערכת בקרת חוסרים (MRP)")
         st.text_input("שם משתמש", key="username")
         st.text_input("סיסמה", type="password", key="password")
         st.button("התחבר", on_click=password_entered)
