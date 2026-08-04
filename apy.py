@@ -1,11 +1,11 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
 גרסה מלאה ומושלמת הכוללת:
-1. טאב חדש (טאב 9) לניהול ועריכה/גריעה של פריטים שקיבלו עדכוני מלאי.
-2. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
-3. כרטיס KPI אינטראקטיבי בטאב 1 להצגת כרטיסי WIP בלחיצה.
+1. סינון אוטומטי של תוכנית הייצור כך שכל הייצור מתחיל אך ורק מחודש ספטמבר ואילך.
+2. טאב 9 לניהול ועריכה/גריעה של פריטים שקיבלו עדכוני מלאי.
+3. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
 4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-5. טאב 10 עם תצוגת מטריצה חודשית לתוכנית העבודה (הרכבה בשורה, חודשים בעמודות), ניתוח רגישות ואפשרות שמירה ועדכון.
+5. טאב 10 עם מטריצת תוכנית עבודה (החל מספטמבר), ניתוח רגישות ואפשרות שמירה ועדכון.
 
 הרצה:
 streamlit run mrp_app.py
@@ -357,13 +357,16 @@ if "custom_assembly_plan_df" not in st.session_state:
                             q_val = float(qty)
                             if q_val > 0:
                                 dt = pd.to_datetime(date_val)
-                                displayed_build_qty = q_val * system_multiplier
-                                plan_rows.append({
-                                    "Assembly_PN": clean_asm_pn,
-                                    "YearMonth": dt.strftime("%Y-%m"),
-                                    "Build_Qty": displayed_build_qty,
-                                    "Raw_Build_Qty": q_val
-                                })
+                                ym_str = dt.strftime("%Y-%m")
+                                # איפוס / סינון: כל הייצור מתחיל אך ורק מחודש ספטמבר (09) ואילך
+                                if dt.month >= 9 or ym_str >= "2026-09":
+                                    displayed_build_qty = q_val * system_multiplier
+                                    plan_rows.append({
+                                        "Assembly_PN": clean_asm_pn,
+                                        "YearMonth": ym_str,
+                                        "Build_Qty": displayed_build_qty,
+                                        "Raw_Build_Qty": q_val
+                                    })
                         except:
                             pass
     st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
@@ -454,14 +457,14 @@ if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
             del st.session_state[k]
     st.rerun()
 
-current_ym_str = datetime.now().strftime("%Y-%m")
+current_ym_str = "2026-09" # מיקוד התחלתי מחודש ספטמבר
 month_options = {}
 for m in MONTH_COLS:
     if pd.notnull(m):
         try:
             dt = pd.to_datetime(m)
             m_ym = dt.strftime("%Y-%m")
-            if m_ym >= current_ym_str:
+            if m_ym >= "2026-09":
                 month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
         except:
             pass
@@ -471,9 +474,10 @@ if not month_options:
         if pd.notnull(m):
             try:
                 dt = pd.to_datetime(m)
-                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+                if dt.month >= 9 or dt.strftime("%Y-%m") >= "2026-09":
+                    month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
             except:
-                month_options[str(m)] = m
+                pass
 
 selected_month_label = st.sidebar.selectbox("בחר חודש לניתוח חוסרים", list(month_options.keys()), key="selected_month_label")
 selected_month_col = month_options[selected_month_label]
@@ -1530,12 +1534,11 @@ with tab9:
         st.info("אין כרגע פריטים עם תוספת מלאי מעודכנת במערכת.")
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית)</div>', unsafe_allow_html=True)
-    st.markdown("כאן מוצגת תוכנית העבודה בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות ולאחר מכן לשמור ולעדכן את התוכנית החדשה.")
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית - החל מספטמבר)</div>', unsafe_allow_html=True)
+    st.markdown("כאן מוצגת תוכנית העבודה (המתחילה מספטמבר ואילך) בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות ולאחר מכן לשמור ולעדכן את התוכנית החדשה.")
 
     st.markdown("##### 📅 מטריצת תוכנית העבודה (הרכבות בשורות, חודשים בעמודות)")
     if not assembly_plan_df.empty:
-        # יצירת טבלת ציר (Pivot Table) כך שכל הרכבה בשורה אחת וכל חודש בעמודה
         pivot_plan_df = assembly_plan_df.pivot_table(
             index=["Assembly_PN"],
             columns="YearMonth",
