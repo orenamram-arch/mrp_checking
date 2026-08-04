@@ -30,13 +30,20 @@ def safe_num(value, default=0.0):
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 
-ASSEMBLY_SYSTEM_FACTORS = {
+# תיקון: זהו ערך ברירת מחדל/גיבוי בלבד. הפקטורים האמיתיים נגזרים
+# אוטומטית מתוך עמודת "QTY PER ASSY" בטבלת עץ ההרכבות שבקובץ עצמו
+# (ראו ASSEMBLY_SYSTEM_FACTORS המחושב בהמשך, אחרי טעינת הנתונים) - כי
+# התברר שהרשימה הידנית הזו הייתה חסרה לפחות פריט אחד (6930N127-001,
+# שפקטור האמת שלו הוא 2 ולא 1 כברירת המחדל). אם טעינת הקובץ נכשלת
+# מכל סיבה, המערכת תיפול חזרה לרשימה הידנית הזו.
+ASSEMBLY_SYSTEM_FACTORS_FALLBACK = {
     "1096G860-002": 4,
     "1093U447-001": 4,
     "1093M635-003": 16,
     "1096B650-003": 16,
     "1096G880-003": 4
 }
+ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
 
 st.set_page_config(
     page_title="MRP Executive Control Tower",
@@ -402,6 +409,59 @@ for col in valid_assemblies:
         assembly_levels[col] = 0
 
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
+
+# ==========================================================
+# תיקון + שיפור: פענוח עץ ההרכבות האמיתי מהקובץ (BOM היררכי)
+# ==========================================================
+# בטבלה בשורות 3-28 (עמודות DESC/LEVEL/PN/QTY PER ASSY, עמודות 104-107)
+# יש עץ הרכבות מלא: כל שורה = הרכבה אחת, עם רמת עומק (LEVEL) וכמות
+# ליחידת ההורה הישיר שלה (QTY PER ASSY). זהו "BOM מוזח" קלאסי - ההורה
+# של כל שורה הוא השורה הקרובה שלפניה עם LEVEL נמוך ב-1.
+#
+# תיקון: הקוד המקורי לא השתמש בטבלה הזו כלל להיררכיה, ובמקום זה
+# הסתמך על מילון קשיח (ASSEMBLY_SYSTEM_FACTORS) עם 5 פריטים בלבד -
+# שהתברר שחסר בו לפחות פריט אחד עם פקטור שונה מ-1 (6930N127-001,
+# פקטור אמיתי=2). כאן אנחנו גוזרים את הפקטורים ישירות מהקובץ, לכל
+# 26 ההרכבות, ובנוסף בונים עץ הורה-ילד מלא לבדיקת זמינות היררכית ב-WIP.
+ASSEMBLY_BOM_TREE = {}     # pn -> {"desc","level","qty_per_parent","parent"}
+ASSEMBLY_CHILDREN = {}     # parent_pn -> [child_pn, ...]
+
+try:
+    _level_stack = []  # [(level, pn), ...] מהשורש ועד הענף הנוכחי
+    for _r in range(3, 29):
+        _desc = df_raw.iloc[_r, 104]
+        _level = df_raw.iloc[_r, 105]
+        _pn = df_raw.iloc[_r, 106]
+        _qty = df_raw.iloc[_r, 107]
+        if pd.isna(_pn):
+            continue
+        _pn = str(_pn).strip()
+        _level = int(_level) if pd.notnull(_level) else 0
+        _qty = safe_num(_qty, default=1.0)
+
+        while _level_stack and _level_stack[-1][0] >= _level:
+            _level_stack.pop()
+        _parent_pn = _level_stack[-1][1] if _level_stack else None
+
+        ASSEMBLY_BOM_TREE[_pn] = {
+            "desc": str(_desc), "level": _level, "qty_per_parent": _qty, "parent": _parent_pn
+        }
+        if _parent_pn:
+            ASSEMBLY_CHILDREN.setdefault(_parent_pn, []).append(_pn)
+
+        _level_stack.append((_level, _pn))
+except Exception:
+    ASSEMBLY_BOM_TREE = {}
+    ASSEMBLY_CHILDREN = {}
+
+if ASSEMBLY_BOM_TREE:
+    ASSEMBLY_SYSTEM_FACTORS = {
+        pn: info["qty_per_parent"] for pn, info in ASSEMBLY_BOM_TREE.items() if info["qty_per_parent"] != 1
+    }
+    if not ASSEMBLY_SYSTEM_FACTORS:
+        ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
+else:
+    ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
 
 if "custom_assembly_plan_df" not in st.session_state:
     cloud_plan = fetch_cloud_assembly_plan()
@@ -830,6 +890,67 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None, plan_df_overr
 breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
 # ==========================================================
+# תיקון קריטי: בדיקת זמינות היררכית אמיתית לפני הוספה ל-WIP
+# ==========================================================
+# הכפתור בטאב ה-WIP הבטיח "בדיקת זמינות היררכית מלאה", אבל בפועל לא
+# הייתה שום בדיקה - היה אפשר להוסיף ל-WIP כל כמות של כל הרכבה (כולל
+# ההרכבה הסופית, רמה 0) גם אם אין שום סיכוי לבנות אותה, כי תתי-ההרכבות
+# שלה חסרות ברכיבי גלם. הפונקציה הזו הולכת רקורסיבית על עץ ה-BOM
+# (ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN שנבנה מהקובץ) ובודקת בכל
+# רמה: (א) האם יש מספיק רכיבי גלם לכמות המבוקשת של ההרכבה הזו, ו-
+# (ב) לכל תת-הרכבה - האם ה-WIP הקיים שלה מכסה את הכמות הדרושה, ואם
+# לא, ממשיכה לבדוק את רכיבי הגלם שלה (רקורסיבית, עד לעלים).
+def check_hierarchical_ctb(asm_pn, requested_qty, inv_cache=None, wip_cache=None, _visited=None):
+    if inv_cache is None:
+        inv_cache = fetch_all_inventory_records()
+    if wip_cache is None:
+        wip_cache = fetch_wip_records()
+    if _visited is None:
+        _visited = set()
+    if asm_pn in _visited or requested_qty <= 0:
+        return []
+    _visited.add(asm_pn)
+
+    blockers = []
+
+    # (א) רכיבי גלם ישירים של ההרכבה הזו (עמודת ההרכבה ב-df הראשי)
+    if asm_pn in df.columns:
+        for _, row in df.iterrows():
+            qty_per = safe_num(row[asm_pn])
+            if qty_per <= 0:
+                continue
+            comp_pn = str(row[PN_COL]).strip()
+            base_stock = safe_num(row[STOCK_COL])
+            if base_stock >= 9000000:
+                # ערך "מלאי אינסופי" - זהו כנראה מק"ט של הרכבה אחרת
+                # שמטופלת כבר דרך העץ הרקורסיבי, לא רכיב גלם אמיתי.
+                continue
+            required = qty_per * requested_qty
+            saved_add, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache)
+            available = base_stock + saved_add
+            if available < required:
+                blockers.append({
+                    "assembly": asm_pn,
+                    "assembly_desc": assembly_mapping.get(asm_pn, asm_pn),
+                    "component": comp_pn,
+                    "component_desc": str(row[DESC_COL]),
+                    "required": required, "available": available,
+                    "shortage": required - available
+                })
+
+    # (ב) תתי-הרכבות (רקורסיה) - מנוכה מהן ה-WIP הקיים
+    for child_pn in ASSEMBLY_CHILDREN.get(asm_pn, []):
+        child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
+        qty_per_parent = child_info.get("qty_per_parent", 1.0)
+        child_needed = requested_qty * qty_per_parent
+        child_wip = wip_cache.get(child_pn, 0.0)
+        net_needed = max(0.0, child_needed - child_wip)
+        if net_needed > 0:
+            blockers.extend(check_hierarchical_ctb(child_pn, net_needed, inv_cache, wip_cache, _visited))
+
+    return blockers
+
+# ==========================================================
 # TABS DEFINITION (ALL 10 TABS FULLY PRESERVED)
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
@@ -1127,13 +1248,40 @@ with tab5:
                     delete_wip_record(wip_to_close)
                     st.rerun()
 
-    with st.form("wip_form"):
-        wip_asm_choice = st.selectbox("בחר הרכבה חדשה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x))
-        wip_qty_input = st.number_input("כמות יחידות הרכבה להוספה לייצור (WIP)", min_value=0.0, value=1.0, step=1.0)
-        if st.form_submit_button("בדיקת זמינות היררכית מלאה ושמור WIP"):
-            save_wip_record(wip_asm_choice, wip_qty_input)
-            st.success("ההרכבה נוספה בהצלחה ל-WIP!")
-            st.rerun()
+    st.divider()
+    st.markdown("##### ➕ צירוף הרכבה חדשה ל-WIP")
+    wip_asm_choice = st.selectbox("בחר הרכבה חדשה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x), key="wip_asm_choice")
+    wip_qty_input = st.number_input("כמות יחידות הרכבה להוספה לייצור (WIP)", min_value=0.0, value=1.0, step=1.0, key="wip_qty_input")
+
+    # תיקון קריטי: כאן בפועל רצה עכשיו בדיקת הזמינות ההיררכית שהכפתור
+    # תמיד הבטיח ולא ביצע. הבדיקה רצה בכל שינוי (מחוץ לטופס) כדי שהמשתמש
+    # יראה מיד את התוצאה, והאישור הסופי נשאר בתוך טופס לשמירה אטומית.
+    hierarchy_blockers = check_hierarchical_ctb(wip_asm_choice, wip_qty_input) if wip_qty_input > 0 else []
+
+    if hierarchy_blockers:
+        st.error(f"⛔ נמצאו {len(hierarchy_blockers)} חוסרים בעץ ההרכבה שיחסמו את הבנייה בפועל (בהרכבה עצמה ו/או בתתי-ההרכבות שלה):")
+        blockers_df = pd.DataFrame(hierarchy_blockers).rename(columns={
+            "assembly": "קוד הרכבה חוסמת", "assembly_desc": "תיאור הרכבה חוסמת",
+            "component": "מק\"ט חסר", "component_desc": "תיאור פריט",
+            "required": "נדרש", "available": "זמין", "shortage": "חוסר"
+        })
+        st.dataframe(blockers_df, use_container_width=True, height=min(300, 45 + 35 * len(blockers_df)))
+        with st.form("wip_form"):
+            override_confirm = st.checkbox("⚠️ ידוע לי שיש חוסרים בעץ ההרכבה, ואני מאשר בכל זאת להוסיף ל-WIP (למשל אם מדובר בהזמנת ייצור מתוכננת מראש)")
+            if st.form_submit_button("שמור ל-WIP בכל זאת"):
+                if override_confirm:
+                    save_wip_record(wip_asm_choice, wip_qty_input)
+                    st.success("ההרכבה נוספה ל-WIP (עם חוסרים ידועים).")
+                    st.rerun()
+                else:
+                    st.warning("יש לסמן את תיבת האישור כדי לשמור למרות החוסרים.")
+    else:
+        st.success("✅ נבדק עץ ההרכבה המלא - כל רכיבי הגלם וכל תתי-ההרכבות זמינים לכמות המבוקשת.")
+        with st.form("wip_form"):
+            if st.form_submit_button("בדיקת זמינות היררכית מלאה ושמור WIP"):
+                save_wip_record(wip_asm_choice, wip_qty_input)
+                st.success("ההרכבה נוספה בהצלחה ל-WIP!")
+                st.rerun()
 
 with tab6:
     st.markdown('<div class="section-title">📅 עדכון מלאי, סטטוס ודחיית ספקים (ETA)</div>', unsafe_allow_html=True)
