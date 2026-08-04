@@ -868,14 +868,23 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
             plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
 
     breakdown_rows = []
+    # תיקון קריטי: עמודת "מלאי" בטבלת החוסרים תשקף עכשיו את אותה
+    # זמינות מתחשבת-ETA כמו כל שאר המערכת (מלאי + אספקה שה-ETA שלה חל
+    # עד סוף טווח החודשים הנבדק) - כדי שלא יהיה פער בין מה שמוצג כאן
+    # לבין מה שקובע בפועל אם הרכבה "ניתנת לייצור" בטאבים אחרים.
+    reference_ym = max(target_yms_tuple) if target_yms_tuple else None
+
     for idx, row in mrp_shortages.iterrows():
         pn = str(row[PN_COL]).strip()
         desc = str(row[DESC_COL])
         item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
 
-        base_stock = safe_num(row[STOCK_COL])
-        saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
-        stock = base_stock + saved_stock_add + sim_extra_stock_dict.get(pn, 0.0)
+        if reference_ym:
+            stock = get_component_available_by_month(pn, reference_ym, inv_cache) + sim_extra_stock_dict.get(pn, 0.0)
+        else:
+            base_stock = safe_num(row[STOCK_COL])
+            saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+            stock = base_stock + saved_stock_add + sim_extra_stock_dict.get(pn, 0.0)
 
         total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -1062,14 +1071,13 @@ with tab1:
                         req_per = s_row["Qty_Per_Assembly"]
                         if req_per > 0:
                             comp_pn = str(s_row["PN"]).strip()
-                            comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
-                            if not comp_match.empty:
-                                c_row = comp_match.iloc[0]
-                                base_stk = safe_num(c_row.get(STOCK_COL, 0))
-                                saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_dash)
-                                total_comp_stock = base_stk + saved_stk
-                                possible_from_this = total_comp_stock / req_per
-                                max_possible_build = min(max_possible_build, possible_from_this)
+                            # תיקון קריטי: זמינות מתחשבת ב-ETA (מלאי + כל אספקה
+                            # שה-ETA שלה חל עד חודש היעד), לא רק מלאי סטטי -
+                            # בדיוק אותה לוגיקה שתיקנו לבדיקת ה-WIP ההיררכית,
+                            # עכשיו גם כאן ובכל מקום אחר שמחשב "ניתן לייצור".
+                            total_comp_stock = get_component_available_by_month(comp_pn, target_m, inv_cache_dash)
+                            possible_from_this = total_comp_stock / req_per
+                            max_possible_build = min(max_possible_build, possible_from_this)
                     gross_executable = max(0.0, min(raw_build, max_possible_build))
                 else:
                     gross_executable = raw_build
@@ -1201,12 +1209,9 @@ with tab2:
                     req_per = s_row["Qty_Per_Assembly"]
                     if req_per > 0:
                         comp_pn = str(s_row["PN"]).strip()
-                        comp_match = df[df[PN_COL].astype(str).str.strip() == comp_pn]
-                        if not comp_match.empty:
-                            c_row = comp_match.iloc[0]
-                            base_stk = safe_num(c_row.get(STOCK_COL, 0))
-                            saved_stk, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache_ctb)
-                            max_possible_build = min(max_possible_build, (base_stk + saved_stk) / req_per)
+                        # תיקון קריטי: אותה זמינות מתחשבת-ETA כמו בכל שאר המערכת
+                        total_comp_stock = get_component_available_by_month(comp_pn, target_m, inv_cache_ctb)
+                        max_possible_build = min(max_possible_build, total_comp_stock / req_per)
                 gross_executable = max(0.0, min(raw_build, max_possible_build))
             else:
                 gross_executable = raw_build
