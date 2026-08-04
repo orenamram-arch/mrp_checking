@@ -837,6 +837,60 @@ footer {{visibility: hidden;}}
     border-right: 3px solid {PRIMARY};
     font-size: 13px;
 }}
+
+/* ============ שיפור ויזואלי: פס תקציר מנהלים + טאבים ============ */
+.exec-summary-strip {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    background: linear-gradient(135deg, rgba(79,70,229,0.10) 0%, rgba(6,182,212,0.10) 100%);
+    border: 1px solid rgba(79,70,229,0.25);
+    border-radius: 16px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    backdrop-filter: blur(6px);
+}}
+.exec-stat {{
+    flex: 1;
+    min-width: 150px;
+    text-align: center;
+    padding: 6px 10px;
+    border-right: 1px solid rgba(128,128,128,0.2);
+}}
+.exec-stat:last-child {{ border-right: none; }}
+.exec-stat-icon {{ font-size: 22px; margin-bottom: 2px; }}
+.exec-stat-value {{
+    font-size: 26px;
+    font-weight: 800;
+    background: linear-gradient(90deg, {PRIMARY}, {ACCENT});
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}}
+.exec-stat-label {{ font-size: 12px; opacity: 0.75; font-weight: 600; margin-top: 2px; }}
+
+/* טאבים גדולים, ברורים וקריאים יותר עם הרבה טאבים בשורה */
+button[data-baseweb="tab"] {{
+    font-weight: 700 !important;
+    font-size: 14.5px !important;
+    padding: 10px 16px !important;
+    border-radius: 10px 10px 0 0 !important;
+    transition: background-color 0.15s ease;
+}}
+button[data-baseweb="tab"]:hover {{
+    background-color: rgba(79,70,229,0.08) !important;
+}}
+button[data-baseweb="tab"][aria-selected="true"] {{
+    background: linear-gradient(135deg, {PRIMARY}, {PRIMARY_DARK}) !important;
+    color: white !important;
+}}
+[data-baseweb="tab-list"] {{
+    gap: 4px !important;
+    flex-wrap: wrap !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1920,6 +1974,44 @@ def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _vi
     return max(0.0, max_qty), limiting_component
 
 # ==========================================================
+# שיפור ויזואלי: פס תקציר מנהלים קבוע, מעל שורת הטאבים
+# ==========================================================
+# חשוב: זה לא נוגע בשום חישוב MRP קיים - רק מציג בצורה בולטת ונגישה
+# נתונים שכבר חושבו למעלה (breakdown_df, WIP), כדי שמנהל יראה את
+# התמונה הראשית מיד עם הכניסה לאפליקציה, בלי לגלול או ללחוץ לתוך
+# אף אחד מ-12 הטאבים.
+_exec_wip_cache = fetch_wip_records()
+_exec_unique_shortage_items = breakdown_df["PN"].nunique() if not breakdown_df.empty else 0
+_exec_blocked_assemblies = breakdown_df[breakdown_df["Assembly"] != "ללא שיוך"]["Assembly"].nunique() if not breakdown_df.empty else 0
+_exec_total_value = breakdown_df.drop_duplicates(subset=["PN"])["Shortage_Value"].sum() if (not breakdown_df.empty and "Shortage_Value" in breakdown_df.columns) else 0.0
+_exec_active_wip = len([q for q in _exec_wip_cache.values() if q > 0])
+
+st.markdown(f"""
+<div class="exec-summary-strip">
+    <div class="exec-stat">
+        <div class="exec-stat-icon">💵</div>
+        <div class="exec-stat-value">${_exec_total_value:,.0f}</div>
+        <div class="exec-stat-label">ערך חוסרים כולל בטווח הנבחר</div>
+    </div>
+    <div class="exec-stat">
+        <div class="exec-stat-icon">📦</div>
+        <div class="exec-stat-value">{_exec_unique_shortage_items:,}</div>
+        <div class="exec-stat-label">פריטים בחוסר</div>
+    </div>
+    <div class="exec-stat">
+        <div class="exec-stat-icon">🏗️</div>
+        <div class="exec-stat-value">{_exec_blocked_assemblies:,}</div>
+        <div class="exec-stat-label">הרכבות מושפעות</div>
+    </div>
+    <div class="exec-stat">
+        <div class="exec-stat-icon">🏭</div>
+        <div class="exec-stat-value">{_exec_active_wip:,}</div>
+        <div class="exec-stat-label">הרכבות ב-WIP פעיל</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ==========================================================
 # TABS DEFINITION (10 הטאבים המקוריים + טאב חדש לעריכת ETA מרוכזת)
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
@@ -2087,7 +2179,8 @@ with tab1:
             "PN": "מק'ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
             "Status": "סטטוס טיפול", "Assembly": "קוד הרכבה", "Assembly_Desc": "תיאור הרכבה",
             "Qty_Per_Assembly": "כמות נדרשת", "Assembly_Monthly_Build": "ת. ייצור",
-            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי", "Total_MRP_Shortage": "סך חוסר"
+            "Required_Demand": "ביקוש מדויק", "Stock": "מלאי", "Total_MRP_Shortage": "סך חוסר",
+            "Unit_Price": "מחיר יחידה ($)", "Shortage_Value": "ערך חוסר ($)"
         })
 
         def _shortage_color(val, vmax):
@@ -2096,10 +2189,21 @@ with tab1:
             ratio = min(1.0, float(val) / vmax)
             return f"background-color: rgba(239,{int(180 - ratio * 140)},{int(120 - ratio * 100)},0.55); color: white;"
 
+        def _value_color(val, vmax):
+            # שיפור ויזואלי: גם עמודת הערך הכספי מקבלת גרדיאנט (כחול-סגול)
+            # כדי שמנהל יראה מיד "איפה הכסף" בלי לקרוא מספרים
+            if vmax <= 0:
+                return ""
+            ratio = min(1.0, float(val) / vmax)
+            return f"background-color: rgba(79,{int(120 - ratio * 60)},229,{0.15 + ratio * 0.5}); color: white;"
+
         sorted_display_df = display_df.sort_values(by="סך חוסר", ascending=False)
         max_shortage = sorted_display_df["סך חוסר"].max() if not sorted_display_df.empty else 0
+        max_value = sorted_display_df["ערך חוסר ($)"].max() if not sorted_display_df.empty else 0
 
-        styled = sorted_display_df.style.map(lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"])
+        styled = sorted_display_df.style.map(lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]) \
+                                         .map(lambda v: _value_color(v, max_value), subset=["ערך חוסר ($)"]) \
+                                         .format({"ערך חוסר ($)": "${:,.0f}", "מחיר יחידה ($)": "${:,.2f}"})
         st.dataframe(styled, column_config={
             "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
             "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
