@@ -919,8 +919,8 @@ COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#
 # ==========================================================
 # SUPABASE SETUP & FAST CACHED STORAGE
 # ==========================================================
-SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
-SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
 
 @st.cache_resource
 def init_supabase() -> Client:
