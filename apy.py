@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מהירה ומתוקנת ללא שגיאות)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מהירה, מתוקנת ומלאה)
 """
 
 import streamlit as st
@@ -900,7 +900,9 @@ with tab2:
             row_data[f"WIP ({target_m})"] = current_wip_qty
 
             if raw_build > 0 or current_wip_qty > 0:
-                chart_assembly_data.append({"הרכבה ותיאור": f"{asm_col} - {asm_desc}", "חודש": target_m, "תכנית ייצור": raw_build, "ניתן לייצור בפועל": net_executable_qty, "WIP": current_wip_qty})
+                chart_assembly_data.append({"הרכבה ותיאור": f"{asm_col} - {asm_desc}", "חודש": target_m, "מדד": "תכנית ייצור", "כמות": raw_build})
+                chart_assembly_data.append({"הרכבה ותיאור": f"{asm_col} - {asm_desc}", "חודש": target_m, "מדד": "ניתן לייצור בפועל", "כמות": net_executable_qty})
+                chart_assembly_data.append({"הרכבה ותיאור": f"{asm_col} - {asm_desc}", "חודש": target_m, "מדד": "WIP", "כמות": current_wip_qty})
 
         for target_m in selected_target_yms:
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == target_m) & (assembly_plan_df["Assembly_PN"] == asm_col)]
