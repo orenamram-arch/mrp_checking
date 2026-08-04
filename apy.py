@@ -5,7 +5,7 @@ MRP Control Tower — מגדל בקרת חוסרים
 2. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
 3. כרטיס KPI אינטראקטיבי בטאב 1 להצגת כרטיסי WIP בלחיצה.
 4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-5. טאב 10 חדש לניתוח רגישות לתוכנית הייצור (באחוזים או בתוספת/הפחתה מספרית).
+5. טאב 10 מורחב לניתוח רגישות, הצגת טבלת תוכנית עבודה ואפשרות שמירה ועדכון של התוכנית החדשה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -320,7 +320,7 @@ def delete_inventory_record(pn):
         st.error(f"שגיאה במחיקה מ-Supabase: {e}")
 
 # ==========================================================
-# DATA LOADING FROM GITHUB
+# DATA LOADING FROM GITHUB & SESSION STATE FOR PLAN OVERRIDE
 # ==========================================================
 @st.cache_data
 def load_data(url):
@@ -339,37 +339,37 @@ except Exception as e:
     st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
     st.stop()
 
-# ==========================================================
-# EXTRACT ASSEMBLY MONTHLY BUILD PLAN & BOM LEVELS
-# ==========================================================
-header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
-plan_rows = []
+# Initialize session state for plan override if not exists
+if "custom_assembly_plan_df" not in st.session_state:
+    header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
+    plan_rows = []
 
-for r in range(3, min(24, df_raw.shape[0])):
-    asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
-    if pd.notnull(asm_pn):
-        clean_asm_pn = str(asm_pn).strip()
-        system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
+    for r in range(3, min(24, df_raw.shape[0])):
+        asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
+        if pd.notnull(asm_pn):
+            clean_asm_pn = str(asm_pn).strip()
+            system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
 
-        for c_idx, date_val in enumerate(header_dates):
-            if pd.notnull(date_val):
-                qty = df_raw.iloc[r, 108 + c_idx]
-                if pd.notnull(qty) and qty != '' and qty != 'NaN':
-                    try:
-                        q_val = float(qty)
-                        if q_val > 0:
-                            dt = pd.to_datetime(date_val)
-                            displayed_build_qty = q_val * system_multiplier
-                            plan_rows.append({
-                                "Assembly_PN": clean_asm_pn,
-                                "YearMonth": dt.strftime("%Y-%m"),
-                                "Build_Qty": displayed_build_qty,
-                                "Raw_Build_Qty": q_val
-                            })
-                    except:
-                        pass
+            for c_idx, date_val in enumerate(header_dates):
+                if pd.notnull(date_val):
+                    qty = df_raw.iloc[r, 108 + c_idx]
+                    if pd.notnull(qty) and qty != '' and qty != 'NaN':
+                        try:
+                            q_val = float(qty)
+                            if q_val > 0:
+                                dt = pd.to_datetime(date_val)
+                                displayed_build_qty = q_val * system_multiplier
+                                plan_rows.append({
+                                    "Assembly_PN": clean_asm_pn,
+                                    "YearMonth": dt.strftime("%Y-%m"),
+                                    "Build_Qty": displayed_build_qty,
+                                    "Raw_Build_Qty": q_val
+                                })
+                        except:
+                            pass
+    st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
 
-assembly_plan_df = pd.DataFrame(plan_rows)
+assembly_plan_df = st.session_state["custom_assembly_plan_df"]
 
 PN_COL = df.columns[1]
 DESC_COL = df.columns[4]
@@ -761,7 +761,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📅 מעקב ETA ודחיות",
     "↩️ ניהול UNDO",
     "📦 ניהול מלאי מעודכן",
-    "🎯 ניתוח רגישות"
+    "🎯 ניתוח רגישות ותוכנית"
 ])
 
 with tab1:
@@ -1531,8 +1531,21 @@ with tab9:
         st.info("אין כרגע פריטים עם תוספת מלאי מעודכנת במערכת.")
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות לתוכנית הייצור (Sensitivity Analysis)</div>', unsafe_allow_html=True)
-    st.markdown("כאן תוכל לשנות באופן דינמי את היקף תוכנית הייצור (באחוזים או בתוספת/הפחתה מספרית של יחידות) ולבחון מיד את ההשפעה.")
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור</div>', unsafe_allow_html=True)
+    st.markdown("כאן תוכל לצפות בתוכנית העבודה הקיימת, לבצע ניתוח רגישות (באחוזים או במספר יחידות), וכן לעדכן ולשמור את התוכנית החדשה באופן מערכתי.")
+
+    st.markdown("##### 📅 טבלת תוכנית העבודה הנוכחית (Assembly Plan)")
+    if not assembly_plan_df.empty:
+        display_plan_table = assembly_plan_df.copy()
+        display_plan_table["תיאור הרכבה"] = display_plan_table["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x))
+        st.dataframe(display_plan_table[["Assembly_PN", "תיאור הרכבה", "YearMonth", "Raw_Build_Qty", "Build_Qty"]].rename(columns={
+            "Assembly_PN": "קוד הרכבה", "YearMonth": "חודש", "Raw_Build_Qty": "כמות גולמית", "Build_Qty": "כמות משוכללת"
+        }), use_container_width=True, height=250)
+    else:
+        st.info("אין נתוני תוכנית עבודה זמינים.")
+
+    st.divider()
+    st.markdown("##### ⚙️ הרצת סימולציית ניתוח רגישות")
 
     col_sens1, col_sens2, col_sens3 = st.columns([1.2, 1, 1])
     with col_sens1:
@@ -1592,10 +1605,10 @@ with tab10:
                 simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
                 simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
 
+        st.session_state["temp_simulated_plan"] = simulated_plan_df
+
         def calculate_sensitivity_breakdown():
             inv_cache = fetch_all_inventory_records()
-            wip_cache = fetch_wip_records()
-
             target_month_cols_map = {}
             for m_c in MONTH_COLS:
                 if pd.notnull(m_c):
@@ -1687,3 +1700,18 @@ with tab10:
             st.dataframe(sens_result_df[["PN", "Description", "Item_Type", "Supplier", "Assembly", "Required_Demand", "Stock", "Total_MRP_Shortage"]], use_container_width=True)
         else:
             st.success("🎉 תחת שינוי זה אין חוסרים ב-MRP בטווח הנבחר!")
+
+    # Prompt user to save/update the plan if a simulated plan exists in session state
+    if "temp_simulated_plan" in st.session_state:
+        st.divider()
+        st.markdown("##### 💾 שמור ועדכן את תוכנית הייצור החדשה במערכת")
+        with st.form("update_plan_form"):
+            update_confirmation = st.checkbox("האם לעדכן את תוכנית העבודה החדשה ולהחיל אותה על כלל המערכת?")
+            if st.form_submit_button("כן, עדכן ושמור את התוכנית החדשה"):
+                if update_confirmation:
+                    st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
+                    del st.session_state["temp_simulated_plan"]
+                    st.success("✅ תוכנית העבודה עודכנה בהצלחה! השינויים הוחלו על כלל הטאבים במערכת.")
+                    st.rerun()
+                else:
+                    st.warning("יש לסמן את תיבת האישור כדי לעדכן את התוכנית בפועל.")
