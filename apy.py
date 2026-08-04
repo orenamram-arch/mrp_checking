@@ -610,13 +610,11 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
     month_plan = active_plan_df[active_plan_df["YearMonth"].isin(target_yms_tuple)]
-    plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
+    plan_dict = month_plan.groupby("Assembly_PN")["Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
         if wip_qty > 0 and asm_wip in plan_dict:
-            sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_wip, 1)
-            raw_wip_qty = wip_qty / sys_factor
-            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
+            plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - wip_qty)
 
     breakdown_rows = []
     for idx, row in mrp_shortages.iterrows():
@@ -647,7 +645,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
                 breakdown_rows.append({
                     "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
                     "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc, "Qty_Per_Assembly": qty_per_asm,
-                    "Assembly_Monthly_Build": asm_build_qty * ASSEMBLY_SYSTEM_FACTORS.get(asm, 1),
+                    "Assembly_Monthly_Build": asm_build_qty,
                     "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
