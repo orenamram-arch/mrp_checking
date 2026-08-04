@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה ללא הגבלת חודשים, עם ניתוח רגישות פרטני והיררכיה מלאה)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני לפי הרכבה וחודש)
 """
 
 import streamlit as st
@@ -321,8 +321,7 @@ DESC_COL = df.columns[4]
 ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
 ASSEMBLY_COLS = df.columns[10:36].tolist()
-# טעינת כל עמודות החודשים הקיימות בקובץ ללא הגבלה
-MONTH_COLS = df.columns[108:].tolist() if len(df.columns) > 108 else []
+MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
 
 valid_assemblies = []
 for col in ASSEMBLY_COLS:
@@ -340,7 +339,7 @@ for col in valid_assemblies:
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
 if "custom_assembly_plan_df" not in st.session_state:
-    header_dates = df_raw.iloc[2, 108:].values if df_raw.shape[1] > 108 else []
+    header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
     plan_rows = []
 
     for r in range(3, df_raw.shape[0]):
@@ -358,13 +357,14 @@ if "custom_assembly_plan_df" not in st.session_state:
                             if q_val > 0:
                                 dt = pd.to_datetime(date_val)
                                 ym_str = dt.strftime("%Y-%m")
-                                displayed_build_qty = q_val * system_multiplier
-                                plan_rows.append({
-                                    "Assembly_PN": clean_asm_pn,
-                                    "YearMonth": ym_str,
-                                    "Build_Qty": displayed_build_qty,
-                                    "Raw_Build_Qty": q_val
-                                })
+                                if dt.month >= 9 or ym_str >= "2026-09":
+                                    displayed_build_qty = q_val * system_multiplier
+                                    plan_rows.append({
+                                        "Assembly_PN": clean_asm_pn,
+                                        "YearMonth": ym_str,
+                                        "Build_Qty": displayed_build_qty,
+                                        "Raw_Build_Qty": q_val
+                                    })
                         except:
                             pass
     st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
@@ -433,7 +433,8 @@ for m in MONTH_COLS:
         try:
             dt = pd.to_datetime(m)
             m_ym = dt.strftime("%Y-%m")
-            month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+            if m_ym >= "2026-09":
+                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
         except:
             pass
 
@@ -442,7 +443,8 @@ if not month_options:
         if pd.notnull(m):
             try:
                 dt = pd.to_datetime(m)
-                month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
+                if dt.month >= 9 or dt.strftime("%Y-%m") >= "2026-09":
+                    month_options[dt.strftime("%B %Y (שנה-חודש: %Y-%m)")] = m
             except:
                 pass
 
@@ -454,7 +456,7 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=12, value=1, key="num_months_ahead")
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
 
 level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)), key=lambda x: int(x) if x.isdigit() else 0)
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
@@ -1084,7 +1086,7 @@ with tab9:
                     st.rerun()
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (כלל החודשים בקובץ - עריכה פרטנית או גורפת)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (עריכה פרטנית לפי הרכבה וחודש)</div>', unsafe_allow_html=True)
     if not assembly_plan_df.empty:
         orig_pivot_plan = assembly_plan_df.pivot_table(index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0).reset_index()
         orig_pivot_plan.insert(1, "רמה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
@@ -1136,6 +1138,8 @@ with tab10:
                     simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
                     simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
         else:
+            # שינוי לחודש ספציפי בלבד
+            sys_factor_map = ASSEMBLY_SYSTEM_FACTORS
             if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
                 multiplier = 1.0 + (sensitivity_val / 100.0)
                 if sens_assembly_target == "הכל (כלל ההרכבות)":
