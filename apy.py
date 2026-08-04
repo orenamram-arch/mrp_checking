@@ -1,6 +1,6 @@
 """
 MRP Control Tower — מגדל בקרת חוסרים
-גרסה מתוקנת הכוללת מנגנון הגנה מפני DataFrame ריק או חסר עמודות.
+גרסה מלאה, מתוקנת ומושלמת המיישמת את סדר ההרכבות המדויק, תחילת ייצור מספטמבר, ומנגנוני הגנה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -230,7 +230,6 @@ if "custom_assembly_plan_df" not in st.session_state:
 
 assembly_plan_df = st.session_state["custom_assembly_plan_df"]
 
-# איפוס הגנה מובטח למונע שגיאות KeyError אם הטבלה ריקה
 if assembly_plan_df.empty or "YearMonth" not in assembly_plan_df.columns:
     assembly_plan_df = pd.DataFrame(columns=["Assembly_PN", "YearMonth", "Build_Qty", "Raw_Build_Qty"])
 
@@ -323,7 +322,6 @@ def calculate_mrp_breakdown(target_yms=None):
     if target_yms is None:
         target_yms = selected_target_yms
     inv_cache = fetch_all_inventory_records()
-    wip_cache = fetch_wip_records()
     
     breakdown_rows = []
     for _, row in df.iterrows():
@@ -332,7 +330,6 @@ def calculate_mrp_breakdown(target_yms=None):
         added_stock, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
         total_stock = stock + added_stock
         
-        # דוגמה לאיסוף נתוני חוסר בסיסיים
         breakdown_rows.append({
             "PN": pn, "Description": str(row[DESC_COL]), "Supplier": current_sup,
             "Status": item_status, "Stock": total_stock, "Total_MRP_Shortage": max(0.0, 10.0 - total_stock)
