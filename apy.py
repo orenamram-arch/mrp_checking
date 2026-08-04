@@ -5,6 +5,7 @@ MRP Control Tower — מגדל בקרת חוסרים
 2. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
 3. כרטיס KPI אינטראקטיבי בטאב 1 להצגת כרטיסי WIP בלחיצה.
 4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
+5. טאב 10 חדש לניתוח רגישות לתוכנית הייצור (באחוזים או בתוספת/הפחתה מספרית).
 
 הרצה:
 streamlit run mrp_app.py
@@ -750,7 +751,7 @@ breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 # ==========================================================
 # TABS DEFINITION
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
@@ -759,7 +760,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📅 עדכון מלאי וספקים",
     "📅 מעקב ETA ודחיות",
     "↩️ ניהול UNDO",
-    "📦 ניהול מלאי מעודכן"
+    "📦 ניהול מלאי מעודכן",
+    "🎯 ניתוח רגישות"
 ])
 
 with tab1:
@@ -1527,3 +1529,161 @@ with tab9:
                         st.rerun()
     else:
         st.info("אין כרגע פריטים עם תוספת מלאי מעודכנת במערכת.")
+
+with tab10:
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות לתוכנית הייצור (Sensitivity Analysis)</div>', unsafe_allow_html=True)
+    st.markdown("כאן תוכל לשנות באופן דינמי את היקף תוכנית הייצור (באחוזים או בתוספת/הפחתה מספרית של יחידות) ולבחון מיד את ההשפעה.")
+
+    col_sens1, col_sens2, col_sens3 = st.columns([1.2, 1, 1])
+    with col_sens1:
+        sens_assembly_target = st.selectbox(
+            "בחר הרכבה לניתוח רגישות (או כלל הקווים)",
+            ["הכל (כלל ההרכבות)"] + filtered_assembly_cols,
+            format_func=lambda x: assembly_mapping.get(x, x),
+            key="sens_assembly_target"
+        )
+    with col_sens2:
+        sens_mode = st.radio(
+            "סוג שינוי",
+            ["אחוזים (%)", "מספרי (יחידות)"],
+            horizontal=True,
+            key="sens_mode"
+        )
+    with col_sens3:
+        if sens_mode == "אחוזים (%)":
+            sensitivity_val = st.slider(
+                "שינוי אחוז תוכנית הייצור (%)",
+                min_value=-50,
+                max_value=100,
+                value=0,
+                step=5,
+                key="sensitivity_slider_pct"
+            )
+        else:
+            sensitivity_val = st.number_input(
+                "תוספת/הפחתה מספרית (יחידות)",
+                min_value=-500,
+                max_value=500,
+                value=0,
+                step=1,
+                key="sensitivity_number_input",
+                help="ערך חיובי מוסיף יחידות לתוכנית, ערך שלילי מפחית."
+            )
+
+    if st.button("🚀 הרץ ניתוח רגישות לתוכנית", key="run_sensitivity"):
+        simulated_plan_df = assembly_plan_df.copy()
+        
+        if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
+            multiplier = 1.0 + (sensitivity_val / 100.0)
+            if sens_assembly_target == "הכל (כלל ההרכבות)":
+                simulated_plan_df["Raw_Build_Qty"] = simulated_plan_df["Raw_Build_Qty"] * multiplier
+                simulated_plan_df["Build_Qty"] = simulated_plan_df["Build_Qty"] * multiplier
+            else:
+                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                simulated_plan_df.loc[mask, "Raw_Build_Qty"] = simulated_plan_df.loc[mask, "Raw_Build_Qty"] * multiplier
+                simulated_plan_df.loc[mask, "Build_Qty"] = simulated_plan_df.loc[mask, "Build_Qty"] * multiplier
+                
+        elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
+            if sens_assembly_target == "הכל (כלל ההרכבות)":
+                simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
+            else:
+                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+
+        def calculate_sensitivity_breakdown():
+            inv_cache = fetch_all_inventory_records()
+            wip_cache = fetch_wip_records()
+
+            target_month_cols_map = {}
+            for m_c in MONTH_COLS:
+                if pd.notnull(m_c):
+                    try:
+                        m_dt_ym = pd.to_datetime(m_c).strftime("%Y-%m")
+                        if m_dt_ym in selected_target_yms:
+                            target_month_cols_map[m_dt_ym] = m_c
+                    except:
+                        pass
+
+            temp_df = df.copy()
+            shortage_records = {}
+
+            for idx, row in temp_df.iterrows():
+                pn = str(row[PN_COL]).strip()
+                saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+                total_added_stock = saved_stock_add
+
+                max_shortage_val = 0.0
+                is_short_or = False
+
+                for ym in selected_target_yms:
+                    col_name = target_month_cols_map.get(ym)
+                    if col_name and col_name in temp_df.columns:
+                        mrp_val = pd.to_numeric(row[col_name], errors='coerce') or 0
+                        effective_mrp_val = mrp_val + total_added_stock if mrp_val < 0 else mrp_val
+
+                        if effective_mrp_val < 0:
+                            is_short_or = True
+                            sh_qty = abs(effective_mrp_val)
+                            if sh_qty > max_shortage_val:
+                                max_shortage_val = sh_qty
+
+                if is_short_or:
+                    shortage_records[idx] = max_shortage_val
+
+            temp_df['Monthly_Balance'] = temp_df.index.map(lambda i: -shortage_records[i] if i in shortage_records else 1.0)
+            mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
+            mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
+
+            month_plan = simulated_plan_df[simulated_plan_df["YearMonth"].isin(selected_target_yms)]
+            plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
+
+            breakdown_rows = []
+            for idx, row in mrp_shortages.iterrows():
+                pn = str(row[PN_COL]).strip()
+                desc = str(row[DESC_COL])
+                item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
+
+                base_stock = pd.to_numeric(row[STOCK_COL], errors='coerce') or 0
+                saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+                stock = base_stock + saved_stock_add
+
+                total_mrp_shortage = row['Total_MRP_Shortage']
+                _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
+
+                for asm in filtered_assembly_cols:
+                    qty_per_asm = pd.to_numeric(row[asm], errors='coerce') or 0
+                    if qty_per_asm > 0:
+                        asm_build_qty = plan_dict.get(asm, 0.0)
+                        required_demand = qty_per_asm * asm_build_qty
+                        asm_desc = assembly_mapping.get(asm, asm)
+
+                        breakdown_rows.append({
+                            "PN": pn, "Description": desc, "Item_Type": item_type, "Supplier": current_sup,
+                            "Status": item_status, "Assembly": asm, "Assembly_Desc": asm_desc,
+                            "Required_Demand": required_demand, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage
+                        })
+            return pd.DataFrame(breakdown_rows)
+
+        sens_result_df = calculate_sensitivity_breakdown()
+        orig_total_shortage = breakdown_df["Total_MRP_Shortage"].sum() if not breakdown_df.empty else 0
+        new_total_shortage = sens_result_df["Total_MRP_Shortage"].sum() if not sens_result_df.empty else 0
+        shortage_diff = new_total_shortage - orig_total_shortage
+
+        desc_change_msg = f"{sensitivity_val}%" if sens_mode == "אחוזים (%)" else f"{sensitivity_val:+g} יחידות"
+        st.success(f"ניתוח רגישות בוצע בהצלחה עבור שינוי של `{desc_change_msg}`!")
+
+        col_res1, col_res2, col_res3 = st.columns(3)
+        with col_res1:
+            kpi_card("📊 סך חוסר מקורי", f"{orig_total_shortage:,.0f}", "יחידות", "blue")
+        with col_res2:
+            kpi_card("📈 סך חוסר לאחר שינוי", f"{new_total_shortage:,.0f}", "יחידות", "orange" if shortage_diff > 0 else "green")
+        with col_res3:
+            kpi_card("delta הפרש בחוסרים", f"{shortage_diff:+,.0f}", "יחידות בהשוואה למקור", "red" if shortage_diff > 0 else "blue")
+
+        if not sens_result_df.empty:
+            st.markdown("##### 📋 פירוט החוסרים המעודכן תחת תרחיש הרגישות:")
+            st.dataframe(sens_result_df[["PN", "Description", "Item_Type", "Supplier", "Assembly", "Required_Demand", "Stock", "Total_MRP_Shortage"]], use_container_width=True)
+        else:
+            st.success("🎉 תחת שינוי זה אין חוסרים ב-MRP בטווח הנבחר!")
