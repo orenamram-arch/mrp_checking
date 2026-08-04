@@ -5,7 +5,7 @@ MRP Control Tower — מגדל בקרת חוסרים
 2. טאב 9 לניהול ועריכה/גריעה של פריטים שקיבלו עדכוני מלאי.
 3. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
 4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-5. טאב 10 עם מטריצת תוכנית עבודה (החל מספטמבר), ניתוח רגישות ואפשרות שמירה ועדכון.
+5. טאב 10 עם מטריצת תוכנית עבודה (החל מספטמבר), ניתוח רגישות, אפשרות שמירה ועדכון, והשוואה מפורטת בין התוכנית המקורית לחדשה.
 
 הרצה:
 streamlit run mrp_app.py
@@ -358,7 +358,6 @@ if "custom_assembly_plan_df" not in st.session_state:
                             if q_val > 0:
                                 dt = pd.to_datetime(date_val)
                                 ym_str = dt.strftime("%Y-%m")
-                                # איפוס / סינון: כל הייצור מתחיל אך ורק מחודש ספטמבר (09) ואילך
                                 if dt.month >= 9 or ym_str >= "2026-09":
                                     displayed_build_qty = q_val * system_multiplier
                                     plan_rows.append({
@@ -457,7 +456,7 @@ if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
             del st.session_state[k]
     st.rerun()
 
-current_ym_str = "2026-09" # מיקוד התחלתי מחודש ספטמבר
+current_ym_str = "2026-09"
 month_options = {}
 for m in MONTH_COLS:
     if pd.notnull(m):
@@ -621,11 +620,12 @@ selected_target_yms = all_ym_list[start_idx:start_idx + num_months_ahead]
 if not selected_target_yms:
     selected_target_yms = [selected_ym]
 
-def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
+def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None, plan_df_override=None):
     if sim_extra_stock is None:
         sim_extra_stock = {}
     if target_yms is None:
         target_yms = selected_target_yms
+    active_plan_df = plan_df_override if plan_df_override is not None else assembly_plan_df
 
     inv_cache = fetch_all_inventory_records()
     wip_cache = fetch_wip_records()
@@ -641,7 +641,6 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
                 pass
 
     temp_df = df.copy()
-
     shortage_records = {}
 
     for idx, row in temp_df.iterrows():
@@ -685,7 +684,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None):
     mrp_shortages = temp_df[temp_df['Monthly_Balance'] < 0].copy()
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
-    month_plan = assembly_plan_df[assembly_plan_df["YearMonth"].isin(target_yms)]
+    month_plan = active_plan_df[active_plan_df["YearMonth"].isin(target_yms)]
     plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
@@ -1535,19 +1534,18 @@ with tab9:
 
 with tab10:
     st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית - החל מספטמבר)</div>', unsafe_allow_html=True)
-    st.markdown("כאן מוצגת תוכנית העבודה (המתחילה מספטמבר ואילך) בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות ולאחר מכן לשמור ולעדכן את התוכנית החדשה.")
+    st.markdown("כאן מוצגת תוכנית העבודה (המתחילה מספטמבר ואילך) בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות, להריץ סימולציה, ולאחר מכן לבחור האם לשמור ולאשר את התוכנית החדשה.")
 
-    st.markdown("##### 📅 מטריצת תוכנית העבודה (הרכבות בשורות, חודשים בעמודות)")
+    st.markdown("##### 📅 מטריצת תוכנית העבודה המקורית / הנוכחית (הרכבות בשורות, חודשים בעמודות)")
     if not assembly_plan_df.empty:
-        pivot_plan_df = assembly_plan_df.pivot_table(
+        orig_pivot_plan = assembly_plan_df.pivot_table(
             index=["Assembly_PN"],
             columns="YearMonth",
             values="Build_Qty",
             fill_value=0.0
         ).reset_index()
-
-        pivot_plan_df.insert(1, "תיאור הרכבה", pivot_plan_df["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
-        st.dataframe(pivot_plan_df, use_container_width=True, height=280)
+        orig_pivot_plan.insert(1, "תיאור הרכבה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        st.dataframe(orig_pivot_plan, use_container_width=True, height=280)
     else:
         st.info("אין נתוני תוכנית עבודה זמינים.")
 
@@ -1712,12 +1710,33 @@ with tab10:
         st.divider()
         st.markdown("##### 💾 שמור ועדכן את תוכנית הייצור החדשה במערכת")
         with st.form("update_plan_form"):
-            update_confirmation = st.checkbox("האם לעדכן את תוכנית העבודה החדשה ולהחיל אותה על כלל המערכת?")
-            if st.form_submit_button("כן, עדכן ושמור את התוכנית החדשה"):
+            update_confirmation = st.checkbox("האם אתה מאשר לשמור את התוכנית החדשה ולהחיל אותה על כלל המערכת?")
+            
+            if st.form_submit_button("כן, שמור ועדכן את תוכנית העבודה החדשה"):
                 if update_confirmation:
+                    # שמירת התוכנית הישנה להצגת השוואה
+                    st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
                     st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
                     del st.session_state["temp_simulated_plan"]
-                    st.success("✅ תוכנית העבודה עודכנה בהצלחה! השינויים הוחלו על כלל הטאבים במערכת.")
+                    st.success("✅ תוכנית העבודה עודכנה ואושרה בהצלחה! השינויים הוחלו על כלל הטאבים במערכת.")
                     st.rerun()
                 else:
                     st.warning("יש לסמן את תיבת האישור כדי לעדכן את התוכנית בפועל.")
+
+    # הצגת השוואה בין התוכנית שהייתה במקור לבין התוכנית החדשה שאושרה (אם קיימת)
+    if "previous_approved_plan" in st.session_state:
+        st.divider()
+        st.markdown("##### 📊 השוואה בין תוכנית הייצור המקורית לתוכנית החדשה שאושרה")
+        
+        orig_plan_pivot = st.session_state["previous_approved_plan"].pivot_table(
+            index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0
+        )
+        new_plan_pivot = assembly_plan_df.pivot_table(
+            index="Assembly_PN", columns="YearMonth", values="Build_Qty", fill_value=0.0
+        )
+        
+        comparison_diff = new_plan_pivot.sub(orig_plan_pivot, fill_value=0.0).reset_index()
+        comparison_diff.insert(1, "תיאור הרכבה", comparison_diff["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        
+        st.markdown("הטבלה להלן מציגה את **ההפרש (Delta)** בין כמויות הייצור המקוריות לחדשות עבור כל הרכבה וחודש:")
+        st.dataframe(comparison_diff, use_container_width=True)
