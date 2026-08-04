@@ -719,38 +719,6 @@ st.set_page_config(
 )
 
 # ==========================================================
-# AUTHENTICATION GATE (שכבת הגנה למערכת)
-# ==========================================================
-def check_password():
-    def password_entered():
-        if st.secrets["passwords"].get(st.session_state["username"]) == st.session_state["password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-            del st.session_state["username"]
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        st.markdown("### 🔐 כניסה למערכת בקרת חוסרים (MRP)")
-        st.text_input("שם משתמש", key="username")
-        st.text_input("סיסמה", type="password", key="password")
-        st.button("התחבר", on_click=password_entered)
-        return False
-    elif not st.session_state["password_correct"]:
-        st.markdown("### 🔐 כניסה למערכת מגדל בקרת חוסרים (MRP)")
-        st.text_input("שם משתמש", key="username")
-        st.text_input("סיסמה", type="password", key="password")
-        st.button("התחבר", on_click=password_entered)
-        st.error("😕 שם משתמש או סיסמה שגויים")
-        return False
-    else:
-        return True
-
-if not check_password():
-    st.stop()  # עוצר את טעינת האפליקציה לחלוטין עד להזנת פרטים נכונים
-
-
-# ==========================================================
 # GLOBAL THEME / CSS
 # ==========================================================
 PRIMARY = "#4F46E5"
@@ -904,22 +872,40 @@ footer {{visibility: hidden;}}
 }}
 .exec-stat-label {{ font-size: 12px; opacity: 0.75; font-weight: 600; margin-top: 2px; }}
 
-/* תיקון ניווט: תפריט צד (sidebar) במקום שורת טאבים עם גלילה */
-[data-testid="stSidebar"] button[kind="secondary"],
-[data-testid="stSidebar"] button[kind="primary"] {{
+/* תיקון ניווט: כפתורי popover קומפקטיים בשורה אחת + חלוניות קופצות */
+.nav-bar-label {{
+    font-weight: 700;
+    font-size: 13px;
+    opacity: 0.7;
+    margin-bottom: 6px;
+}}
+div[data-testid="stPopover"] > button {{
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    padding: 10px 14px !important;
+    border: 1.5px solid rgba(79,70,229,0.3) !important;
+    background: linear-gradient(135deg, rgba(79,70,229,0.10), rgba(6,182,212,0.10)) !important;
+    transition: all 0.15s ease;
+}}
+div[data-testid="stPopover"] > button:hover {{
+    background: linear-gradient(135deg, {PRIMARY}, {ACCENT}) !important;
+    color: white !important;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(79,70,229,0.35);
+}}
+/* כפתורי הבחירה בתוך החלונית הקופצת עצמה */
+[data-testid="stPopoverBody"] button[kind="secondary"],
+[data-testid="stPopoverBody"] button[kind="primary"] {{
     text-align: right !important;
     justify-content: flex-start !important;
     border-radius: 8px !important;
     margin-bottom: 3px !important;
     font-weight: 600 !important;
 }}
-[data-testid="stSidebar"] button[kind="primary"] {{
+[data-testid="stPopoverBody"] button[kind="primary"] {{
     background: linear-gradient(135deg, {PRIMARY}, {PRIMARY_DARK}) !important;
+    color: white !important;
     border: none !important;
-}}
-[data-testid="stSidebar"] .streamlit-expanderHeader {{
-    font-weight: 800 !important;
-    font-size: 15px !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -951,8 +937,8 @@ COLOR_SEQ = [PRIMARY, ACCENT, WARNING, DANGER, SUCCESS, "#A78BFA", "#F472B6", "#
 # ==========================================================
 # SUPABASE SETUP & FAST CACHED STORAGE
 # ==========================================================
-SUPABASE_URL = st.secrets["supabase"]["url"]
-SUPABASE_KEY = st.secrets["supabase"]["key"]
+SUPABASE_URL = "https://vobzhjutimeowgsjhgyt.supabase.co"
+SUPABASE_KEY = "sb_publishable_OC3UKQ-UdO3ba4yHgvt9RQ_-AZdenBv"
 
 @st.cache_resource
 def init_supabase() -> Client:
@@ -2042,16 +2028,15 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# ניווט: תפריט צד קבוע במקום שורת טאבים עם גלילה ימינה-שמאלה
+# ניווט: תפריטים נפתחים (popover) במקום שורת טאבים עם גלילה
 # ==========================================================
-# תיקון ניווט (לא לוגיקה!): עם 12 טאבים, שורת st.tabs הרגילה דורשת
-# גלילה אופקית מציקה. הוחלף בתפריט ניווט אנכי בסיידבר (בלי גלילה
-# צדדית בכלל - רק גלילה רגילה למעלה/למטה כמו כל תפריט), מקובץ לפי
-# נושא כדי שיהיה קל יותר לאתר טאב. כל "with tabN:" הוחלף ב-
-# "if nav_page == '...':" עם אותה הזחה בדיוק - שום תוכן בתוך הטאבים
-# עצמם לא השתנה.
-st.sidebar.markdown("### 🧭 ניווט בין הטאבים")
-
+# תיקון ניווט בלבד (לא לוגיקה!): 3 כפתורי קטגוריה בשורה אחת קבועה
+# למעלה - לחיצה על כל אחד פותחת חלונית קופצת (popover) עם רשימת
+# הטאבים שבקטגוריה. אין יותר גלילה אופקית (כמו בשורת טאבים), ואין
+# יותר רשימה אנכית ארוכה שתופסת מקום קבוע (כמו בסיידבר הקודם) - כל
+# הטאבים נגישים מתוך שורה אחת קומפקטית, וה"תפריט" נעלם אוטומטית אחרי
+# שבוחרים. כל "with tabN:" נשאר בדיוק "if/elif nav_page == '...':"
+# עם אותה הזחה בדיוק - שום תוכן בתוך הטאבים עצמם לא השתנה.
 NAV_GROUPS = {
     "📊 ניתוח ומעקב": [
         "📈 Executive Dashboard",
@@ -2072,17 +2057,27 @@ NAV_GROUPS = {
         "🎯 ניתוח רגישות ותוכנית",
     ],
 }
+PAGE_TO_GROUP = {page: g for g, items in NAV_GROUPS.items() for page in items}
 
 if "main_nav_page" not in st.session_state:
     st.session_state["main_nav_page"] = "📈 Executive Dashboard"
 
-for _group_label, _group_items in NAV_GROUPS.items():
-    with st.sidebar.expander(_group_label, expanded=(st.session_state["main_nav_page"] in _group_items)):
-        for _item in _group_items:
-            _btn_type = "primary" if st.session_state["main_nav_page"] == _item else "secondary"
-            if st.button(_item, key=f"nav_btn_{_item}", use_container_width=True, type=_btn_type):
-                st.session_state["main_nav_page"] = _item
-                st.rerun()
+st.markdown('<div class="nav-bar-label">🧭 ניווט מהיר — לחץ על קטגוריה לבחירת טאב</div>', unsafe_allow_html=True)
+nav_cols = st.columns(len(NAV_GROUPS))
+_has_popover = hasattr(st, "popover")
+for (_group_label, _group_items), _col in zip(NAV_GROUPS.items(), nav_cols):
+    with _col:
+        _current_group = PAGE_TO_GROUP.get(st.session_state["main_nav_page"])
+        _trigger_label = f"{_group_label}  ▾" + (f"   |   {st.session_state['main_nav_page']}" if _current_group == _group_label else "")
+        # תאימות לאחור: אם גרסת Streamlit ישנה מדי ואין st.popover,
+        # נופלים בחזרה ל-expander (עדיין בשורה הראשית, לא בסיידבר).
+        _nav_container = st.popover(_trigger_label, use_container_width=True) if _has_popover else st.expander(_trigger_label, expanded=False)
+        with _nav_container:
+            for _item in _group_items:
+                _btn_type = "primary" if st.session_state["main_nav_page"] == _item else "secondary"
+                if st.button(_item, key=f"nav_btn_{_item}", use_container_width=True, type=_btn_type):
+                    st.session_state["main_nav_page"] = _item
+                    st.rerun()
 
 nav_page = st.session_state["main_nav_page"]
 st.markdown(f'<div class="section-title" style="font-size:22px;">{nav_page}</div>', unsafe_allow_html=True)
