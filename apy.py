@@ -594,6 +594,52 @@ def get_base_mrp_qty(pn):
     _, qty = get_base_mrp_eta_and_qty(pn)
     return qty
 
+# ==========================================================
+# תיקון קריטי: זמינות עתידית לפי ETA - לא רק מלאי נוכחי בקופה
+# ==========================================================
+# זה בדיוק המנגנון הבסיסי של MRP שציינת: פריט לא חייב להיות כבר
+# פיזית במלאי כדי שהתוכנית תיחשב אפשרית - מספיק שה-ETA שלו חל עד
+# (כולל) חודש הבנייה המתוכנן. לכן, זמינות של רכיב לחודש יעד נתון היא:
+# מלאי נוכחי (STOCK) + כל האספקה הצפויה מלוח ה-PO הפריטני (עמודות
+# 80-103) שה-ETA שלה <= חודש היעד + תוספת מלאי ידנית שנרשמה עם ETA
+# שכבר חל עד חודש היעד.
+def get_cumulative_incoming_supply(pn, target_ym):
+    matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
+    if matching_rows.empty:
+        return 0.0
+    row_idx = matching_rows.index[0]
+    total = 0.0
+    for col_pos, dt in SUPPLY_DATE_MAP.items():
+        if col_pos > 103:
+            continue  # רק בלוק לוח האספקה הפריטני (80-103), לא עמודות היתרה החודשית
+        try:
+            ym = dt.strftime("%Y-%m")
+            if ym <= target_ym:
+                q = safe_num(df_raw.iloc[row_idx, col_pos])
+                if q > 0:
+                    total += q
+        except Exception:
+            pass
+    return total
+
+def get_component_available_by_month(pn, target_ym, inv_cache=None):
+    if inv_cache is None:
+        inv_cache = fetch_all_inventory_records()
+    match = df[df[PN_COL].astype(str).str.strip() == pn]
+    base_stock = safe_num(match.iloc[0][STOCK_COL]) if not match.empty else 0.0
+
+    saved_add, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
+    manual_eta_ym = None
+    if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
+        try:
+            manual_eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
+        except Exception:
+            manual_eta_ym = None
+    manual_stock_effective = saved_add if (manual_eta_ym is None or manual_eta_ym <= target_ym) else 0.0
+
+    incoming_supply = get_cumulative_incoming_supply(pn, target_ym)
+    return base_stock + manual_stock_effective + incoming_supply
+
 def get_first_supply_eta(pn, inv_cache=None):
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
     if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
@@ -897,10 +943,17 @@ breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 # ההרכבה הסופית, רמה 0) גם אם אין שום סיכוי לבנות אותה, כי תתי-ההרכבות
 # שלה חסרות ברכיבי גלם. הפונקציה הזו הולכת רקורסיבית על עץ ה-BOM
 # (ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN שנבנה מהקובץ) ובודקת בכל
-# רמה: (א) האם יש מספיק רכיבי גלם לכמות המבוקשת של ההרכבה הזו, ו-
-# (ב) לכל תת-הרכבה - האם ה-WIP הקיים שלה מכסה את הכמות הדרושה, ואם
-# לא, ממשיכה לבדוק את רכיבי הגלם שלה (רקורסיבית, עד לעלים).
-def check_hierarchical_ctb(asm_pn, requested_qty, inv_cache=None, wip_cache=None, _visited=None):
+# רמה: (א) האם יש מספיק רכיבי גלם לכמות המבוקשת של ההרכבה הזו עד
+# (כולל) חודש היעד - כלומר מלאי נוכחי + כל אספקה שה-ETA שלה כבר חל,
+# בדיוק כמו במנגנון ה-MRP הרגיל (לא רק "יש כרגע בקופה") - ו-(ב) לכל
+# תת-הרכבה, האם ה-WIP הקיים שלה מכסה את הכמות הדרושה, ואם לא, ממשיכה
+# לבדוק את רכיבי הגלם שלה (רקורסיבית, עד לעלים).
+#
+# תיקון נוסף (בעקבות משוב): הגרסה הקודמת השוותה מול מלאי נוכחי בלבד
+# ("STOCK") והתעלמה לגמרי מ-ETA - זו הייתה טעות, כי בדיוק ככה עובד
+# ה-MRP: רכיב לא חייב להיות כבר במלאי, מספיק שה-ETA שלו חל עד (כולל)
+# חודש הבנייה המתוכנן.
+def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip_cache=None, _visited=None):
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
     if wip_cache is None:
@@ -920,14 +973,13 @@ def check_hierarchical_ctb(asm_pn, requested_qty, inv_cache=None, wip_cache=None
             if qty_per <= 0:
                 continue
             comp_pn = str(row[PN_COL]).strip()
-            base_stock = safe_num(row[STOCK_COL])
-            if base_stock >= 9000000:
+            base_stock_check = safe_num(row[STOCK_COL])
+            if base_stock_check >= 9000000:
                 # ערך "מלאי אינסופי" - זהו כנראה מק"ט של הרכבה אחרת
                 # שמטופלת כבר דרך העץ הרקורסיבי, לא רכיב גלם אמיתי.
                 continue
             required = qty_per * requested_qty
-            saved_add, _, _, _, _, _, _ = get_inventory_record(comp_pn, inv_cache)
-            available = base_stock + saved_add
+            available = get_component_available_by_month(comp_pn, target_ym, inv_cache)
             if available < required:
                 blockers.append({
                     "assembly": asm_pn,
@@ -946,7 +998,7 @@ def check_hierarchical_ctb(asm_pn, requested_qty, inv_cache=None, wip_cache=None
         child_wip = wip_cache.get(child_pn, 0.0)
         net_needed = max(0.0, child_needed - child_wip)
         if net_needed > 0:
-            blockers.extend(check_hierarchical_ctb(child_pn, net_needed, inv_cache, wip_cache, _visited))
+            blockers.extend(check_hierarchical_ctb(child_pn, net_needed, target_ym, inv_cache, wip_cache, _visited))
 
     return blockers
 
@@ -1252,14 +1304,23 @@ with tab5:
     st.markdown("##### ➕ צירוף הרכבה חדשה ל-WIP")
     wip_asm_choice = st.selectbox("בחר הרכבה חדשה לצירוף ל-WIP", filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x), key="wip_asm_choice")
     wip_qty_input = st.number_input("כמות יחידות הרכבה להוספה לייצור (WIP)", min_value=0.0, value=1.0, step=1.0, key="wip_qty_input")
+    wip_target_month_label = st.selectbox(
+        "לאיזה חודש בונים? (הבדיקה תתחשב באספקה/ETA שכבר אמורים להגיע עד חודש זה, לא רק במלאי הנוכחי בקופה)",
+        list(month_options.keys()),
+        index=list(month_options.keys()).index(selected_month_label) if selected_month_label in month_options else 0,
+        key="wip_target_month_label"
+    )
+    wip_target_ym = pd.to_datetime(month_options[wip_target_month_label]).strftime("%Y-%m")
 
     # תיקון קריטי: כאן בפועל רצה עכשיו בדיקת הזמינות ההיררכית שהכפתור
-    # תמיד הבטיח ולא ביצע. הבדיקה רצה בכל שינוי (מחוץ לטופס) כדי שהמשתמש
-    # יראה מיד את התוצאה, והאישור הסופי נשאר בתוך טופס לשמירה אטומית.
-    hierarchy_blockers = check_hierarchical_ctb(wip_asm_choice, wip_qty_input) if wip_qty_input > 0 else []
+    # תמיד הבטיח ולא ביצע. הבדיקה מתחשבת ב-ETA (מלאי נוכחי + כל אספקה
+    # שה-ETA שלה חל עד חודש הבנייה שנבחר, בדיוק כמו מנגנון ה-MRP הרגיל)
+    # ולא רק במה שכבר פיזית בקופה. הבדיקה רצה בכל שינוי (מחוץ לטופס) כדי
+    # שהמשתמש יראה מיד את התוצאה, והאישור הסופי נשאר בתוך טופס לשמירה אטומית.
+    hierarchy_blockers = check_hierarchical_ctb(wip_asm_choice, wip_qty_input, wip_target_ym) if wip_qty_input > 0 else []
 
     if hierarchy_blockers:
-        st.error(f"⛔ נמצאו {len(hierarchy_blockers)} חוסרים בעץ ההרכבה שיחסמו את הבנייה בפועל (בהרכבה עצמה ו/או בתתי-ההרכבות שלה):")
+        st.error(f"⛔ נמצאו {len(hierarchy_blockers)} חוסרים בעץ ההרכבה עד חודש {wip_target_ym} (בהרכבה עצמה ו/או בתתי-ההרכבות שלה) - כולל התחשבות ב-ETA צפוי:")
         blockers_df = pd.DataFrame(hierarchy_blockers).rename(columns={
             "assembly": "קוד הרכבה חוסמת", "assembly_desc": "תיאור הרכבה חוסמת",
             "component": "מק\"ט חסר", "component_desc": "תיאור פריט",
