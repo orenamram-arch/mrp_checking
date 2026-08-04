@@ -598,11 +598,17 @@ def get_base_mrp_qty(pn):
 # תיקון קריטי: זמינות עתידית לפי ETA - לא רק מלאי נוכחי בקופה
 # ==========================================================
 # זה בדיוק המנגנון הבסיסי של MRP שציינת: פריט לא חייב להיות כבר
-# פיזית במלאי כדי שהתוכנית תיחשב אפשרית - מספיק שה-ETA שלו חל עד
-# (כולל) חודש הבנייה המתוכנן. לכן, זמינות של רכיב לחודש יעד נתון היא:
-# מלאי נוכחי (STOCK) + כל האספקה הצפויה מלוח ה-PO הפריטני (עמודות
-# 80-103) שה-ETA שלה <= חודש היעד + תוספת מלאי ידנית שנרשמה עם ETA
-# שכבר חל עד חודש היעד.
+# פיזית במלאי כדי שהתוכנית תיחשב אפשרית - מספיק שה-ETA שלו חל **לפני**
+# חודש הבנייה המתוכנן (חודש קודם, לא אותו חודש עצמו - כי אין ודאות
+# שהפריט יגיע *לפני* שהבנייה בפועל מתחילה בתוך חודש היעד עצמו). לכן,
+# זמינות של רכיב לחודש יעד נתון היא: מלאי נוכחי (STOCK) + כל האספקה
+# הצפויה מלוח ה-PO הפריטני (עמודות 80-103) שה-ETA שלה קודם לחודש
+# היעד (לא כולל אותו חודש) + תוספת מלאי ידנית שנרשמה עם ETA שכבר חל
+# בחודש קודם לחודש היעד.
+#
+# תיקון (בעקבות משוב נוסף): בגרסה הקודמת השתמשתי ב-"<=" (כולל את אותו
+# חודש) - זו הייתה טעות. הכלל הנכון, כפי שהוגדר: "במלאי, או שה-ETA
+# הוא חודש לפני התוכנית" - כלומר "<" (קודם, לא כולל).
 def get_cumulative_incoming_supply(pn, target_ym):
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if matching_rows.empty:
@@ -614,7 +620,7 @@ def get_cumulative_incoming_supply(pn, target_ym):
             continue  # רק בלוק לוח האספקה הפריטני (80-103), לא עמודות היתרה החודשית
         try:
             ym = dt.strftime("%Y-%m")
-            if ym <= target_ym:
+            if ym < target_ym:
                 q = safe_num(df_raw.iloc[row_idx, col_pos])
                 if q > 0:
                     total += q
@@ -635,7 +641,7 @@ def get_component_available_by_month(pn, target_ym, inv_cache=None):
             manual_eta_ym = pd.to_datetime(manual_eta).strftime("%Y-%m")
         except Exception:
             manual_eta_ym = None
-    manual_stock_effective = saved_add if (manual_eta_ym is None or manual_eta_ym <= target_ym) else 0.0
+    manual_stock_effective = saved_add if (manual_eta_ym is None or manual_eta_ym < target_ym) else 0.0
 
     incoming_supply = get_cumulative_incoming_supply(pn, target_ym)
     return base_stock + manual_stock_effective + incoming_supply
@@ -819,10 +825,13 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         # החיל abs() על ערך שכבר שלילי, בלי לשנות אותו).
         #
         # התיקון האמיתי: תוספת מלאי שנשמרה עם ETA מוגדר משפיעה רק
-        # מהחודש שבו היא אמורה להגיע ואילך (זה בדיוק ה"מצטבר קדימה"
-        # שביקשת) - היא לא "נעלמת" בחודשים שאחרי, אבל גם לא מוחלת
-        # בחודשים שלפני שהיא בכלל קיימת פיזית. תוספת בלי ETA (או תוספת
-        # מסימולציית What-If) ממשיכה להיחשב זמינה מיידית, כברירת מחדל.
+        # החל מהחודש שאחרי חודש ה-ETA שלה (זה בדיוק ה"מצטבר קדימה"
+        # שביקשת) - היא לא "נעלמת" בחודשים שאחרי, אבל גם לא מוחלת לא
+        # בחודש ה-ETA עצמו ולא לפניו, כי אין ודאות שהיא מגיעה *לפני*
+        # שהבנייה בפועל מתחילה בתוך אותו חודש (בדיוק כפי שהובהר: "או
+        # שהמלאי במלאי, או שה-ETA שלו הוא חודש לפני התוכנית"). תוספת
+        # בלי ETA (או תוספת מסימולציית What-If) ממשיכה להיחשב זמינה
+        # מיידית, כברירת מחדל.
         manual_eta_ym = None
         if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
             try:
@@ -838,7 +847,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
             if col_name and col_name in temp_df.columns:
                 mrp_val = safe_num(row[col_name])
 
-                stock_arrived_by_this_month = (manual_eta_ym is None) or (manual_eta_ym <= ym)
+                stock_arrived_by_this_month = (manual_eta_ym is None) or (manual_eta_ym < ym)
                 effective_addition = (saved_stock_add if stock_arrived_by_this_month else 0.0) + sim_val
 
                 effective_mrp_val = mrp_val + effective_addition if mrp_val < 0 else mrp_val
