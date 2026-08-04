@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם אישור שמירת ניתוח רגישות)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני לפי הרכבה וחודש)
 """
 
 import streamlit as st
@@ -336,7 +336,6 @@ for col in valid_assemblies:
     except:
         assembly_levels[col] = 0
 
-# יישור היררכיה מדויקת לפי רמות עץ ומק'ט
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
 if "custom_assembly_plan_df" not in st.session_state:
@@ -1087,7 +1086,7 @@ with tab9:
                     st.rerun()
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית - החל מספטמבר)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (עריכה פרטנית לפי הרכבה וחודש)</div>', unsafe_allow_html=True)
     if not assembly_plan_df.empty:
         orig_pivot_plan = assembly_plan_df.pivot_table(index=["Assembly_PN"], columns="YearMonth", values="Build_Qty", fill_value=0.0).reset_index()
         orig_pivot_plan.insert(1, "רמה", orig_pivot_plan["Assembly_PN"].map(lambda x: assembly_levels.get(x, 0)))
@@ -1096,6 +1095,16 @@ with tab10:
         st.dataframe(orig_pivot_plan, use_container_width=True, height=280)
 
     st.divider()
+    st.markdown("##### ⚙️ הגדרת שינוי רגישות: גורף או חודש ספציפי")
+    
+    col_mode_choice = st.columns(2)
+    with col_mode_choice[0]:
+        sens_scope = st.radio("היקף השינוי", ["שינוי גורף לכל החודשים", "שינוי לחודש ספציפי בלבד"], horizontal=True, key="sens_scope")
+    with col_mode_choice[1]:
+        if sens_scope == "שינוי לחודש ספציפי בלבד":
+            available_yms = sorted(assembly_plan_df["YearMonth"].unique())
+            target_sens_month = st.selectbox("בחר חודש ספציפי לעדכון", available_yms, key="target_sens_month")
+
     col_sens1, col_sens2, col_sens3 = st.columns([1.2, 1, 1])
     with col_sens1:
         sens_assembly_target = st.selectbox("בחר הרכבה לניתוח רגישות", ["הכל (כלל ההרכבות)"] + filtered_assembly_cols, format_func=lambda x: assembly_mapping.get(x, x), key="sens_assembly_target")
@@ -1109,23 +1118,47 @@ with tab10:
 
     if st.button("🚀 הרץ ניתוח רגישות לתוכנית", key="run_sensitivity"):
         simulated_plan_df = assembly_plan_df.copy()
-        if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
-            multiplier = 1.0 + (sensitivity_val / 100.0)
-            if sens_assembly_target == "הכל (כלל ההרכבות)":
-                simulated_plan_df["Raw_Build_Qty"] *= multiplier
-                simulated_plan_df["Build_Qty"] *= multiplier
-            else:
-                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
-                simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
-                simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
-        elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
-            if sens_assembly_target == "הכל (כלל ההרכבות)":
-                simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
-            else:
-                mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
-                simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
-                simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+        
+        if sens_scope == "שינוי גורף לכל החודשים":
+            if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
+                multiplier = 1.0 + (sensitivity_val / 100.0)
+                if sens_assembly_target == "הכל (כלל ההרכבות)":
+                    simulated_plan_df["Raw_Build_Qty"] *= multiplier
+                    simulated_plan_df["Build_Qty"] *= multiplier
+                else:
+                    mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
+                    simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
+            elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
+                if sens_assembly_target == "הכל (כלל ההרכבות)":
+                    simulated_plan_df["Raw_Build_Qty"] = (simulated_plan_df["Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                    simulated_plan_df["Build_Qty"] = (simulated_plan_df["Build_Qty"] + sensitivity_val).clip(lower=0)
+                else:
+                    mask = simulated_plan_df["Assembly_PN"] == sens_assembly_target
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+        else:
+            # שינוי לחודש ספציפי בלבד
+            sys_factor_map = ASSEMBLY_SYSTEM_FACTORS
+            if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
+                multiplier = 1.0 + (sensitivity_val / 100.0)
+                if sens_assembly_target == "הכל (כלל ההרכבות)":
+                    mask = simulated_plan_df["YearMonth"] == target_sens_month
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
+                    simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
+                else:
+                    mask = (simulated_plan_df["Assembly_PN"] == sens_assembly_target) & (simulated_plan_df["YearMonth"] == target_sens_month)
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] *= multiplier
+                    simulated_plan_df.loc[mask, "Build_Qty"] *= multiplier
+            elif sens_mode == "מספרי (יחידות)" and sensitivity_val != 0:
+                if sens_assembly_target == "הכל (כלל ההרכבות)":
+                    mask = simulated_plan_df["YearMonth"] == target_sens_month
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
+                else:
+                    mask = (simulated_plan_df["Assembly_PN"] == sens_assembly_target) & (simulated_plan_df["YearMonth"] == target_sens_month)
+                    simulated_plan_df.loc[mask, "Raw_Build_Qty"] = (simulated_plan_df.loc[mask, "Raw_Build_Qty"] + sensitivity_val).clip(lower=0)
+                    simulated_plan_df.loc[mask, "Build_Qty"] = (simulated_plan_df.loc[mask, "Build_Qty"] + sensitivity_val).clip(lower=0)
 
         st.session_state["temp_simulated_plan"] = simulated_plan_df
         st.success("ניתוח הרגישות בוצע בהצלחה! צפה בתוצאות למטה ומאשר לשמור במידת הצורך.")
