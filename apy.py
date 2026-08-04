@@ -5,7 +5,7 @@ MRP Control Tower — מגדל בקרת חוסרים
 2. מד מוכנות ייצור משוקלל מתוך טבלת ה-CTB.
 3. כרטיס KPI אינטראקטיבי בטאב 1 להצגת כרטיסי WIP בלחיצה.
 4. אימות היררכיה מחמיר בטאב 5 מבוסס לוגיקת OR חודשית.
-5. טאב 10 מורחב לניתוח רגישות, הצגת טבלת תוכנית עבודה ואפשרות שמירה ועדכון של התוכנית החדשה.
+5. טאב 10 עם תצוגת מטריצה חודשית לתוכנית העבודה (הרכבה בשורה, חודשים בעמודות), ניתוח רגישות ואפשרות שמירה ועדכון.
 
 הרצה:
 streamlit run mrp_app.py
@@ -339,7 +339,6 @@ except Exception as e:
     st.error(f"שגיאה בטעינת הקובץ מ-GitHub. פירוט השגיאה: {e}")
     st.stop()
 
-# Initialize session state for plan override if not exists
 if "custom_assembly_plan_df" not in st.session_state:
     header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
     plan_rows = []
@@ -1531,16 +1530,21 @@ with tab9:
         st.info("אין כרגע פריטים עם תוספת מלאי מעודכנת במערכת.")
 
 with tab10:
-    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור</div>', unsafe_allow_html=True)
-    st.markdown("כאן תוכל לצפות בתוכנית העבודה הקיימת, לבצע ניתוח רגישות (באחוזים או במספר יחידות), וכן לעדכן ולשמור את התוכנית החדשה באופן מערכתי.")
+    st.markdown('<div class="section-title">🎯 ניתוח רגישות וניהול תוכנית הייצור (מטריצה חודשית)</div>', unsafe_allow_html=True)
+    st.markdown("כאן מוצגת תוכנית העבודה בצורה מטריציונית (כל הרכבה בשורה אחת, וכל חודש מהווה עמודה נפרדת). תוכל לבצע ניתוח רגישות ולאחר מכן לשמור ולעדכן את התוכנית החדשה.")
 
-    st.markdown("##### 📅 טבלת תוכנית העבודה הנוכחית (Assembly Plan)")
+    st.markdown("##### 📅 מטריצת תוכנית העבודה (הרכבות בשורות, חודשים בעמודות)")
     if not assembly_plan_df.empty:
-        display_plan_table = assembly_plan_df.copy()
-        display_plan_table["תיאור הרכבה"] = display_plan_table["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x))
-        st.dataframe(display_plan_table[["Assembly_PN", "תיאור הרכבה", "YearMonth", "Raw_Build_Qty", "Build_Qty"]].rename(columns={
-            "Assembly_PN": "קוד הרכבה", "YearMonth": "חודש", "Raw_Build_Qty": "כמות גולמית", "Build_Qty": "כמות משוכללת"
-        }), use_container_width=True, height=250)
+        # יצירת טבלת ציר (Pivot Table) כך שכל הרכבה בשורה אחת וכל חודש בעמודה
+        pivot_plan_df = assembly_plan_df.pivot_table(
+            index=["Assembly_PN"],
+            columns="YearMonth",
+            values="Build_Qty",
+            fill_value=0.0
+        ).reset_index()
+
+        pivot_plan_df.insert(1, "תיאור הרכבה", pivot_plan_df["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
+        st.dataframe(pivot_plan_df, use_container_width=True, height=280)
     else:
         st.info("אין נתוני תוכנית עבודה זמינים.")
 
@@ -1701,7 +1705,6 @@ with tab10:
         else:
             st.success("🎉 תחת שינוי זה אין חוסרים ב-MRP בטווח הנבחר!")
 
-    # Prompt user to save/update the plan if a simulated plan exists in session state
     if "temp_simulated_plan" in st.session_state:
         st.divider()
         st.markdown("##### 💾 שמור ועדכן את תוכנית הייצור החדשה במערכת")
