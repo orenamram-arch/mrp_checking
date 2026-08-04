@@ -1003,9 +1003,9 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
     return blockers
 
 # ==========================================================
-# TABS DEFINITION (ALL 10 TABS FULLY PRESERVED)
+# TABS DEFINITION (10 הטאבים המקוריים + טאב חדש לעריכת ETA מרוכזת)
 # ==========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "📈 Executive Dashboard",
     "📊 תוכנית ייצור (Smart CTB)",
     "💡 סימולציית What-If",
@@ -1015,7 +1015,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📅 מעקב ETA ודחיות",
     "↩️ ניהול UNDO",
     "📦 ניהול מלאי מעודכן",
-    "🎯 ניתוח רגישות ותוכנית"
+    "🎯 ניתוח רגישות ותוכנית",
+    "✏️ עריכת ETA מרוכזת"
 ])
 
 with tab1:
@@ -1576,3 +1577,120 @@ with tab10:
         comparison_diff.insert(2, "תיאור הרכבה", comparison_diff["Assembly_PN"].map(lambda x: assembly_mapping.get(x, x)))
         comparison_diff = comparison_diff.sort_values(by=["רמה", "Assembly_PN"])
         st.dataframe(comparison_diff, use_container_width=True)
+
+with tab11:
+    # ==========================================================
+    # טאב חדש: עריכת ETA מרוכזת לכל הפריטים
+    # ==========================================================
+    # טבלה אחת עם כל הפריטים, שאפשר לערוך בה ישירות ETA / תוספת מלאי /
+    # סטטוס / ספק / הערות, ולשמור הכל ל-DB (Supabase) בלחיצה אחת.
+    # חשוב: זו בדיוק אותה טבלה (mrp_inventory_updates) שממנה כל שאר
+    # המערכת קוראת - חישובי ה-MRP, ה-CTB, ובדיקת הזמינות ההיררכית ב-WIP
+    # (get_inventory_record) - כך שכל שינוי שנשמר כאן מוזן אוטומטית לכל
+    # החישובים בכל שאר הטאבים, בלי צורך בשום שינוי נוסף.
+    st.markdown('<div class="section-title">✏️ עריכת ETA מרוכזת לכל הפריטים</div>', unsafe_allow_html=True)
+    st.caption("עדכון כאן נשמר ישירות ב-DB, ומשפיע מיידית על כל חישובי ה-MRP, ה-CTB ובדיקת הזמינות ההיררכית ב-WIP בכל שאר הטאבים.")
+
+    inv_cache_bulk = fetch_all_inventory_records()
+
+    col_bf1, col_bf2, col_bf3 = st.columns([1.2, 1.5, 1])
+    with col_bf1:
+        bulk_item_type = st.selectbox("סינון לפי סוג פריט", ["הכל"] + item_types, key="bulk_item_type")
+    with col_bf2:
+        bulk_search = st.text_input("חיפוש לפי מק\"ט או תיאור", key="bulk_search")
+    with col_bf3:
+        bulk_only_shortage = st.checkbox("הצג רק פריטים שכרגע בחוסר", key="bulk_only_shortage")
+
+    shortage_pns = set(breakdown_df["PN"].unique()) if not breakdown_df.empty else set()
+    bulk_rows = []
+
+    for _, row in df.iterrows():
+        p_num = str(row[PN_COL]).strip()
+        if not p_num or p_num == 'nan':
+            continue
+        if bulk_only_shortage and p_num not in shortage_pns:
+            continue
+        p_desc = str(row[DESC_COL])
+        p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+        if bulk_item_type != "הכל" and p_type != bulk_item_type:
+            continue
+        if bulk_search and bulk_search.strip():
+            needle = bulk_search.strip().lower()
+            if needle not in p_num.lower() and needle not in p_desc.lower():
+                continue
+
+        orig_eta = get_base_mrp_eta(p_num)
+        orig_qty = get_base_mrp_qty(p_num)
+        saved_rec = inv_cache_bulk.get(p_num, {})
+        current_eta_raw = saved_rec.get("eta", "")
+        try:
+            current_eta_date = pd.to_datetime(current_eta_raw).date() if current_eta_raw else None
+        except Exception:
+            current_eta_date = None
+
+        bulk_rows.append({
+            "מק\"ט": p_num,
+            "תיאור פריט": p_desc,
+            "סוג פריט": p_type,
+            "ETA מקורי (MRP)": orig_eta,
+            "כמות מקורית (MRP)": orig_qty,
+            "ETA מעודכן": current_eta_date,
+            "תוספת מלאי": float(saved_rec.get("added_stock", 0.0) or 0.0),
+            "סטטוס": saved_rec.get("status", "פתוח") or "פתוח",
+            "ספק": saved_rec.get("supplier", "אופק") or "אופק",
+            "הערות": saved_rec.get("comment", "") or "",
+        })
+
+    if not bulk_rows:
+        st.info("לא נמצאו פריטים התואמים לסינון שנבחר.")
+    else:
+        bulk_df = pd.DataFrame(bulk_rows)
+        st.caption(f"מציג {len(bulk_df)} פריטים. ניתן לערוך ETA מעודכן / תוספת מלאי / סטטוס / ספק / הערות ישירות בטבלה, ואז ללחוץ על 'שמור' למטה.")
+
+        edited_df = st.data_editor(
+            bulk_df,
+            key="bulk_eta_editor",
+            use_container_width=True,
+            height=520,
+            hide_index=True,
+            disabled=["מק\"ט", "תיאור פריט", "סוג פריט", "ETA מקורי (MRP)", "כמות מקורית (MRP)"],
+            column_config={
+                "ETA מעודכן": st.column_config.DateColumn("ETA מעודכן", format="YYYY-MM-DD"),
+                "תוספת מלאי": st.column_config.NumberColumn("תוספת מלאי", min_value=0.0, step=1.0),
+                "סטטוס": st.column_config.SelectboxColumn("סטטוס", options=["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]),
+                "ספק": st.column_config.SelectboxColumn("ספק", options=supplier_options),
+            }
+        )
+
+        if st.button("💾 שמור את כל השינויים ל-DB", key="bulk_save_btn"):
+            changed_count = 0
+            for i in range(len(bulk_df)):
+                orig_row = bulk_df.iloc[i]
+                new_row = edited_df.iloc[i]
+
+                new_stock_val = float(new_row["תוספת מלאי"]) if pd.notnull(new_row["תוספת מלאי"]) else 0.0
+                changed = (
+                    str(orig_row["ETA מעודכן"]) != str(new_row["ETA מעודכן"]) or
+                    float(orig_row["תוספת מלאי"]) != new_stock_val or
+                    orig_row["סטטוס"] != new_row["סטטוס"] or
+                    orig_row["ספק"] != new_row["ספק"] or
+                    orig_row["הערות"] != new_row["הערות"]
+                )
+                if changed:
+                    save_inventory_record(
+                        pn=orig_row["מק\"ט"],
+                        added_stock=new_stock_val,
+                        eta=str(new_row["ETA מעודכן"]) if new_row["ETA מעודכן"] else "",
+                        status=new_row["סטטוס"],
+                        supplier=new_row["ספק"],
+                        comment=new_row["הערות"],
+                        updated_by="Bulk ETA Editor",
+                        webhook_url=webhook_url
+                    )
+                    changed_count += 1
+
+            if changed_count > 0:
+                st.success(f"נשמרו {changed_count} שינויים ל-DB. כל החישובים בכל הטאבים יתעדכנו בהתאם.")
+                st.rerun()
+            else:
+                st.info("לא זוהו שינויים לשמירה.")
