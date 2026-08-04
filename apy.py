@@ -1,5 +1,5 @@
 """
-MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני לפי הרכבה וחודש)
+MRP Control Tower — מגדל בקרת חוסרים (גרסה מלאה עם ניתוח רגישות פרטני ושמירה בענן)
 """
 
 import streamlit as st
@@ -296,6 +296,27 @@ def delete_inventory_record(pn):
     except Exception as e:
         st.error(f"שגיאה במחיקה מ-Supabase: {e}")
 
+@st.cache_data(ttl=60)
+def fetch_cloud_assembly_plan():
+    try:
+        response = supabase.table("mrp_assembly_plans").select("*").execute()
+        if response.data:
+            return pd.DataFrame(response.data)
+    except:
+        pass
+    return pd.DataFrame()
+
+def save_cloud_assembly_plan(plan_df):
+    try:
+        records = plan_df.to_dict(orient="records")
+        # שמירה בענן (batch upsert לפי מפתח כפול אם קיים או מחיקה והכנסה מחדש)
+        supabase.table("mrp_assembly_plans").delete().neq("Assembly_PN", "DUMMY").execute()
+        if records:
+            supabase.table("mrp_assembly_plans").upsert(records).execute()
+        fetch_cloud_assembly_plan.clear()
+    except Exception as e:
+        st.error(f"שגיאה בשמירת תוכנית הייצור לענן: {e}")
+
 # ==========================================================
 # DATA LOADING FROM GITHUB & SESSION STATE
 # ==========================================================
@@ -339,35 +360,39 @@ for col in valid_assemblies:
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
 if "custom_assembly_plan_df" not in st.session_state:
-    header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
-    plan_rows = []
+    cloud_plan = fetch_cloud_assembly_plan()
+    if not cloud_plan.empty:
+        st.session_state["custom_assembly_plan_df"] = cloud_plan
+    else:
+        header_dates = df_raw.iloc[2, 108:132].values if df_raw.shape[1] > 132 else []
+        plan_rows = []
 
-    for r in range(3, df_raw.shape[0]):
-        asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
-        if pd.notnull(asm_pn):
-            clean_asm_pn = str(asm_pn).strip()
-            system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
+        for r in range(3, df_raw.shape[0]):
+            asm_pn = df_raw.iloc[r, 106] if df_raw.shape[1] > 106 else None
+            if pd.notnull(asm_pn):
+                clean_asm_pn = str(asm_pn).strip()
+                system_multiplier = ASSEMBLY_SYSTEM_FACTORS.get(clean_asm_pn, 1)
 
-            for c_idx, date_val in enumerate(header_dates):
-                if pd.notnull(date_val):
-                    qty = df_raw.iloc[r, 108 + c_idx]
-                    if pd.notnull(qty) and qty != '' and qty != 'NaN':
-                        try:
-                            q_val = float(qty)
-                            if q_val > 0:
-                                dt = pd.to_datetime(date_val)
-                                ym_str = dt.strftime("%Y-%m")
-                                if dt.month >= 9 or ym_str >= "2026-09":
-                                    displayed_build_qty = q_val * system_multiplier
-                                    plan_rows.append({
-                                        "Assembly_PN": clean_asm_pn,
-                                        "YearMonth": ym_str,
-                                        "Build_Qty": displayed_build_qty,
-                                        "Raw_Build_Qty": q_val
-                                    })
-                        except:
-                            pass
-    st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
+                for c_idx, date_val in enumerate(header_dates):
+                    if pd.notnull(date_val):
+                        qty = df_raw.iloc[r, 108 + c_idx]
+                        if pd.notnull(qty) and qty != '' and qty != 'NaN':
+                            try:
+                                q_val = float(qty)
+                                if q_val > 0:
+                                    dt = pd.to_datetime(date_val)
+                                    ym_str = dt.strftime("%Y-%m")
+                                    if dt.month >= 9 or ym_str >= "2026-09":
+                                        displayed_build_qty = q_val * system_multiplier
+                                        plan_rows.append({
+                                            "Assembly_PN": clean_asm_pn,
+                                            "YearMonth": ym_str,
+                                            "Build_Qty": displayed_build_qty,
+                                            "Raw_Build_Qty": q_val
+                                        })
+                            except:
+                                pass
+        st.session_state["custom_assembly_plan_df"] = pd.DataFrame(plan_rows)
 
 assembly_plan_df = st.session_state["custom_assembly_plan_df"]
 raw_eta_dates = df_raw.iloc[2, :].values if df_raw.shape[0] > 2 else []
@@ -1193,8 +1218,10 @@ with tab10:
                 if update_confirmation:
                     st.session_state["previous_approved_plan"] = assembly_plan_df.copy()
                     st.session_state["custom_assembly_plan_df"] = st.session_state["temp_simulated_plan"]
+                    # שמירה גם בבסיס הנתונים ב-Supabase לענן
+                    save_cloud_assembly_plan(st.session_state["temp_simulated_plan"])
                     del st.session_state["temp_simulated_plan"]
-                    st.success("תוכנית הייצור עודכנה ונשמרה בהצלחה במערכת!")
+                    st.success("תוכנית הייצור עודכנה ונשמרה בהצלחה בענן ובמערכת!")
                     st.rerun()
                 else:
                     st.warning("יש לסמן את תיבת האישור כדי לשמור את השינויים.")
