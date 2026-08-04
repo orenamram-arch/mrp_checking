@@ -924,7 +924,16 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         findchips_link = f"https://www.findchips.com/search/{pn}"
 
         added_for_this_pn = False
-        for asm in filtered_assembly_cols:
+        # תיקון קריטי: כאן חייבים לעבור על *כל* ההרכבות (ASSEMBLY_COLS),
+        # לא רק filtered_assembly_cols. filtered_assembly_cols מסונן לפי
+        # "סינון לפי רמת עץ (BOM Level)" בסיידבר - סינון שמיועד לתצוגה
+        # בלבד. אם הוא היה בשימוש כאן, אז כל עוד מסנן הרמה בסיידבר לא
+        # מוגדר בדיוק לרמה של הרכבה מסוימת (או "הכל"), אותה הרכבה הייתה
+        # "נעלמת" לגמרי מחישוב זיהוי החוסרים הבסיסי - וכתוצאה מכך
+        # asm_shortages שלה תמיד היה יוצא ריק, בלי שום קשר לזמינות
+        # האמיתית של הרכיבים שלה. זו בדיוק הסיבה שהובילה לתוצאות לא
+        # עקביות בין הרצות עם סינוני רמה שונים בסיידבר.
+        for asm in ASSEMBLY_COLS:
             qty_per_asm = safe_num(row[asm])
             if qty_per_asm > 0:
                 added_for_this_pn = True
@@ -1336,10 +1345,14 @@ with tab2:
             info = shared_plan_ctb.get((asm_col, target_m))
             raw_build = info["raw_build"] if info else 0.0
             gross_executable = info["gross_executable"] if info else 0.0
-            net_build = max(0.0, raw_build - (info["wip"] if info else 0.0))
+            current_wip_this_m = info["wip"] if info else 0.0
             limiting_pns = info["limiting_components"] if info else []
+            # תיקון: היעד שנותר לבנייה החודש הוא התוכנית פחות מה שכבר
+            # ב-WIP (בדיוק אותה לוגיקה כמו בחישוב עצמו) - זה הבסיס הנכון
+            # להשוואה, לא raw_build הגולמי.
+            remaining_target = max(0.0, raw_build - current_wip_this_m)
 
-            if limiting_pns and gross_executable < raw_build:
+            if limiting_pns and gross_executable < remaining_target - 1e-9:
                 # תיקון קריטי: הרכיבים החוסמים מגיעים עכשיו מהקצאת המלאי
                 # המשותפת (compute_shared_executable_plan) - כך שאם שתי
                 # הרכבות שולפות מאותו רכיב מוגבל, זה בא לידי ביטוי כאן
@@ -1349,11 +1362,19 @@ with tab2:
                     c_match = df[df[PN_COL].astype(str).str.strip() == c_pn]
                     c_desc = str(c_match.iloc[0][DESC_COL]) if not c_match.empty else ""
                     raw_eta = get_first_supply_eta(c_pn, inv_cache_ctb)
-                    shortage_amt = raw_build - gross_executable
+                    shortage_amt = remaining_target - gross_executable
                     formatted_missing.append(f"{c_pn} ({c_desc[:10]}) - חוסם ל-{shortage_amt:g} יח' [ETA: {raw_eta}]")
                 row_data[f"סטטוס וחוסרים ({target_m})"] = "❌ חסר (כולל התחשבות במלאי משותף עם הרכבות אחרות): " + " | ".join(formatted_missing)
+            elif raw_build <= 0 and current_wip_this_m <= 0:
+                # תיקון: הבחנה ברורה - אין בכלל תוכנית ייצור לחודש הזה
+                row_data[f"סטטוס וחוסרים ({target_m})"] = "💤 ללא תוכנית ייצור"
+            elif remaining_target <= 1e-9 and current_wip_this_m > 0:
+                # תיקון: מקרה שהיה מתבלבל עם "ללא תוכנית ייצור" - יש
+                # תוכנית, אבל היא כולה כבר ב-WIP, אז אין יחידות *נוספות*
+                # לייצר החודש (זה שונה מ"אין תוכנית בכלל").
+                row_data[f"סטטוס וחוסרים ({target_m})"] = f"🔵 כל התוכנית ({raw_build:g} יח') כבר ב-WIP - אין יחידות נוספות לייצר החודש"
             else:
-                row_data[f"סטטוס וחוסרים ({target_m})"] = "✅ מוכן לייצור מלא" if net_build > 0 else "💤 ללא תוכנית ייצור"
+                row_data[f"סטטוס וחוסרים ({target_m})"] = "✅ מוכן לייצור מלא (כולל כל היחידות הנוספות שנותרו מעבר ל-WIP)"
 
         if has_any_build:
             matrix_rows.append(row_data)
