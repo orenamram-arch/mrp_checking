@@ -628,9 +628,12 @@ def get_cumulative_incoming_supply(pn, target_ym):
             pass
     return total
 
-def get_component_available_by_month(pn, target_ym, inv_cache=None):
+def get_component_available_by_month(pn, target_ym, inv_cache=None, wip_cache=None):
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
+    if wip_cache is None:
+        wip_cache = fetch_wip_records()
+
     match = df[df[PN_COL].astype(str).str.strip() == pn]
     base_stock = safe_num(match.iloc[0][STOCK_COL]) if not match.empty else 0.0
 
@@ -644,7 +647,24 @@ def get_component_available_by_month(pn, target_ym, inv_cache=None):
     manual_stock_effective = saved_add if (manual_eta_ym is None or manual_eta_ym < target_ym) else 0.0
 
     incoming_supply = get_cumulative_incoming_supply(pn, target_ym)
-    return base_stock + manual_stock_effective + incoming_supply
+
+    # תיקון קריטי: מלאי שכבר "נתפס" ע"י WIP קיים. הרכבה שנמצאת כרגע
+    # ב-WIP כבר משכה בפועל מהמחסן את כל הרכיבים הדרושים לה - כלומר
+    # הכמות הזו כבר לא באמת זמינה לאף אחד אחר, גם אם ה-STOCK הבסיסי
+    # בקובץ "לא יודע" את זה (כי ה-WIP הוא רשומה שנוספה באפליקציה,
+    # אחרי ייצוא הקובץ המקורי, ולכן לא כבר מגולמת ב-STOCK). זה חל תמיד,
+    # לכל חודש יעד שנבדק - כי הצריכה כבר קרתה בפועל, לא רק בעתיד.
+    wip_committed = 0.0
+    if not match.empty and wip_cache:
+        row0 = match.iloc[0]
+        for asm_col in ASSEMBLY_COLS:
+            wip_qty = wip_cache.get(asm_col, 0.0)
+            if wip_qty > 0 and asm_col in df.columns:
+                qty_per = safe_num(row0.get(asm_col, 0.0))
+                if qty_per > 0:
+                    wip_committed += qty_per * wip_qty
+
+    return max(0.0, base_stock + manual_stock_effective + incoming_supply - wip_committed)
 
 def get_first_supply_eta(pn, inv_cache=None):
     _, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -889,7 +909,8 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
 
         if reference_ym:
-            stock = get_component_available_by_month(pn, reference_ym, inv_cache) + sim_extra_stock_dict.get(pn, 0.0)
+            # תיקון קריטי: כולל עכשיו גם ניכוי מלאי שכבר "נתפס" ע"י WIP קיים
+            stock = get_component_available_by_month(pn, reference_ym, inv_cache, wip_cache) + sim_extra_stock_dict.get(pn, 0.0)
         else:
             base_stock = safe_num(row[STOCK_COL])
             saved_stock_add, _, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
@@ -992,7 +1013,12 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
         def get_pool(pn):
             if pn not in pool_cache:
-                total_available_by_month = get_component_available_by_month(pn, ym, inv_cache)
+                # תיקון קריטי: get_component_available_by_month כבר מנכה
+                # כאן באופן קבוע כל מלאי שנצרך בפועל ע"י WIP קיים (לכל
+                # ההרכבות, לא רק זו שנבדקת כרגע) - ולכן אין לנכות WIP
+                # שוב בהמשך על סמך "gross - wip" כמו שנעשה בעבר, כי זו
+                # הייתה ניכוי כפול של אותה עובדה.
+                total_available_by_month = get_component_available_by_month(pn, ym, inv_cache, wip_cache)
                 pool_cache[pn] = max(0.0, total_available_by_month - consumed_so_far.get(pn, 0.0))
             return pool_cache[pn]
 
@@ -1006,44 +1032,47 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
             if raw_build <= 0 and current_wip_qty <= 0:
                 continue
 
+            # תיקון קריטי: היעד שנותר לבנייה הוא התוכנית פחות מה שכבר
+            # ב-WIP (כבר החל, כבר צרך חומרים) - ובודקים זמינות חומרים
+            # רק ביחס ליעד *הנותר* הזה, כי get_pool כבר מגלם בתוכו את
+            # ניכוי חומרי הגלם של ה-WIP הקיים.
+            remaining_plan_target = max(0.0, raw_build - current_wip_qty)
             asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
 
-            max_possible_build = raw_build
+            max_possible_new_build = remaining_plan_target
             limiting_components = []
-            if not asm_shortages.empty and raw_build > 0:
+            if not asm_shortages.empty and remaining_plan_target > 0:
                 for _, s_row in asm_shortages.iterrows():
                     req_per = s_row["Qty_Per_Assembly"]
                     if req_per > 0:
                         comp_pn = str(s_row["PN"]).strip()
                         avail = get_pool(comp_pn)
                         possible = avail / req_per
-                        if possible < max_possible_build - 1e-9:
-                            max_possible_build = possible
+                        if possible < max_possible_new_build - 1e-9:
+                            max_possible_new_build = possible
                             limiting_components = [comp_pn]
-                        elif abs(possible - max_possible_build) < 1e-9:
+                        elif abs(possible - max_possible_new_build) < 1e-9:
                             limiting_components.append(comp_pn)
-                gross_executable = max(0.0, min(raw_build, max_possible_build))
+                net_executable_qty = max(0.0, min(remaining_plan_target, max_possible_new_build))
             else:
-                gross_executable = raw_build
+                net_executable_qty = remaining_plan_target
 
-            net_executable_qty = max(0.0, gross_executable - current_wip_qty)
-
-            # ניכוי הצריכה בפועל של ההרכבה הזו - גם מהמאגר של החודש
-            # הנוכחי (כדי שהרכבות הבאות באותו חודש יראו זמינות מוקטנת),
-            # וגם מ-consumed_so_far (כדי שהחודשים הבאים בתור יראו אותה
-            # הפחתה, ולא יתחילו מ"אפס צריכה" מחדש).
-            if not asm_shortages.empty and gross_executable > 0:
+            # ניכוי הצריכה החדשה בפועל (מעבר למה שכבר ב-WIP וכבר נוכה
+            # פעם אחת בתוך get_pool) - גם מהמאגר של החודש הנוכחי (כדי
+            # שהרכבות הבאות באותו חודש יראו זמינות מוקטנת), וגם מ-
+            # consumed_so_far (כדי שהחודשים הבאים בתור יראו אותה הפחתה).
+            if not asm_shortages.empty and net_executable_qty > 0:
                 for _, s_row in asm_shortages.iterrows():
                     req_per = s_row["Qty_Per_Assembly"]
                     if req_per > 0:
                         comp_pn = str(s_row["PN"]).strip()
-                        consumed_amount = req_per * gross_executable
+                        consumed_amount = req_per * net_executable_qty
                         pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
                         consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
 
             result[(asm_col, ym)] = {
                 "raw_build": raw_build,
-                "gross_executable": gross_executable,
+                "gross_executable": net_executable_qty,
                 "net_executable": net_executable_qty,
                 "wip": current_wip_qty,
                 "limiting_components": limiting_components,
@@ -1095,7 +1124,8 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
                 # שמטופלת כבר דרך העץ הרקורסיבי, לא רכיב גלם אמיתי.
                 continue
             required = qty_per * requested_qty
-            available = get_component_available_by_month(comp_pn, target_ym, inv_cache)
+            # תיקון קריטי: כולל ניכוי מלאי שכבר "נתפס" ע"י WIP קיים
+            available = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
             if available < required:
                 blockers.append({
                     "assembly": asm_pn,
