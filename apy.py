@@ -2924,25 +2924,25 @@ elif nav_page == "🏆 קיבולת ייצור מקסימלית":
 
     col_cap1, col_cap2 = st.columns([1, 1])
     with col_cap1:
-       col_cap1, col_cap2 = st.columns([1, 1])
-    with col_cap1:
-        top_asm = cap_df.iloc[0]["קוד הרכבה"] if not cap_df.empty else "—"
-        top_val = f"{cap_df.iloc[0]['קיבולת מקסימלית (יח\')']:,.0f} יח'" if not cap_df.empty else ""
+        if not cap_df.empty:
+            top_num = cap_df.iloc[0]["קיבולת מקסימלית (יח')"]
+            top_val = f"{top_num:,.0f} יח'"
+            top_asm = cap_df.iloc[0]["קוד הרכבה"]
+        else:
+            top_val = ""
+            top_asm = "—"
         st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", top_asm, top_val)
+        
     with col_cap2:
-        bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()] if not cap_df.empty else None
-        bt_asm = bottleneck_row["קוד הרכבה"] if bottleneck_row is not None else "—"
-        bt_val = f"{bottleneck_row['קיבולת מקסימלית (יח\')']:,.0f} יח'" if bottleneck_row is not None else ""
+        if not cap_df.empty:
+            bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()]
+            bt_num = bottleneck_row["קיבולת מקסימלית (יח')"]
+            bt_val = f"{bt_num:,.0f} יח'"
+            bt_asm = bottleneck_row["קוד הרכבה"]
+        else:
+            bt_val = ""
+            bt_asm = "—"
         st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bt_asm, bt_val)
-    with col_cap2:
-        bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()] if not cap_df.empty else None
-        st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bottleneck_row["קוד הרכבה"] if bottleneck_row is not None else "—",
-                   f"{bottleneck_row['קיבולת מקסימלית (יח\')']:,.0f} יח'" if bottleneck_row is not None else "")
-
-    fig_cap = px.bar(
-        cap_df.sort_values("קיבולת מקסימלית (יח')", ascending=True),
-        x="קיבולת מקסימלית (יח')", y="קוד הרכבה", orientation='h',
-        color="קיבולת מקסימלית (יח')", color_continuous_scale="Blues",
         hover_data=["תיאור", "רכיב/הרכבה מגבילים"]
     )
     fig_cap.update_layout(template=PLOTLY_TEMPLATE, height=max(400, 28 * len(cap_df)), margin=dict(t=10, b=10, l=10, r=10))
