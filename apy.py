@@ -2920,8 +2920,6 @@ elif nav_page == "🏆 קיבולת ייצור מקסימלית":
             "רכיב/הרכבה מגבילים": limiting if limiting else "—"
         })
 
-    cap_df = pd.DataFrame(cap_rows).sort_values(["רמה בעץ", "קיבולת מקסימלית (יח')"], ascending=[True, False])
-
     col_cap1, col_cap2 = st.columns([1, 1])
     with col_cap1:
         if not cap_df.empty:
