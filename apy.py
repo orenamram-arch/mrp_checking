@@ -2924,8 +2924,16 @@ elif nav_page == "🏆 קיבולת ייצור מקסימלית":
 
     col_cap1, col_cap2 = st.columns([1, 1])
     with col_cap1:
-        st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", cap_df.iloc[0]["קוד הרכבה"] if not cap_df.empty else "—",
-                   f"{cap_df.iloc[0]['קיבולת מקסימלית (יח\")']:,.0f} יח'" if not cap_df.empty else ""
+       col_cap1, col_cap2 = st.columns([1, 1])
+    with col_cap1:
+        top_asm = cap_df.iloc[0]["קוד הרכבה"] if not cap_df.empty else "—"
+        top_val = f"{cap_df.iloc[0]['קיבולת מקסימלית (יח\')']:,.0f} יח'" if not cap_df.empty else ""
+        st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", top_asm, top_val)
+    with col_cap2:
+        bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()] if not cap_df.empty else None
+        bt_asm = bottleneck_row["קוד הרכבה"] if bottleneck_row is not None else "—"
+        bt_val = f"{bottleneck_row['קיבולת מקסימלית (יח\')']:,.0f} יח'" if bottleneck_row is not None else ""
+        st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bt_asm, bt_val)
     with col_cap2:
         bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()] if not cap_df.empty else None
         st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bottleneck_row["קוד הרכבה"] if bottleneck_row is not None else "—",
