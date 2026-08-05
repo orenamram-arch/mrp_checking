@@ -1467,7 +1467,7 @@ selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS
 # הוספת סינון לעמודה AW במסננים המתקדמים
 aw_values = df[AW_COL].dropna().astype(str).unique().tolist() if AW_COL in df.columns else []
 aw_values = sorted(list(set(aw_values)))
-selected_aw = st.sidebar.selectbox("סינון לפי עמודה AW", ["הכל"] + aw_values, key="selected_aw")
+selected_aw = st.sidebar.selectbox("סינון לפי ספק או BFE ", ["הכל"] + aw_values, key="selected_aw")
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices, key="selected_search_item")
