@@ -760,6 +760,16 @@ st.markdown(f"""
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 
+/* --- UI FIX: הסליידר משמאל לימין אך הטקסט מימין לשמאל --- */
+[data-testid="stSlider"] {{
+    direction: ltr !important;
+}}
+[data-testid="stSlider"] [data-testid="stMarkdownContainer"] {{
+    direction: rtl !important;
+    text-align: right !important;
+}}
+/* -------------------------------------------------------- */
+
 .hero-banner {{
     background: linear-gradient(120deg, {PRIMARY} 0%, {PRIMARY_DARK} 45%, {ACCENT} 100%);
     padding: 28px 32px;
@@ -1132,7 +1142,11 @@ except Exception as e:
 
 PN_COL = df.columns[1]
 DESC_COL = df.columns[4]
-ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
+
+# --- FIX: הבטחת הגדרת ה-Item Type לעמודה AS (אינדקס 44 בפורמט מבוסס אפס) ---
+ITEM_TYPE_COL = df.columns[44]
+# --------------------------------------------------------------------------
+
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
 PRICE_COL = df.columns[50] if len(df.columns) > 50 else df.columns[-1]  
 AW_COL = df.columns[48] if len(df.columns) > 48 else df.columns[-1]  
