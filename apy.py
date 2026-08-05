@@ -1,7 +1,6 @@
 # MRP Control Tower — מגדל בקרת חוסרים
-# גרסה מתוקנת: תיקון באג תאריכים בתוכנית ההרכבה, תיקון באג NaN בהמרות
-# מספריות, תיקון שליפת ETA בסיסי מה-MRP, ותיקון הצטברות מלאי לפי ETA.
-# כולל תוספת סינון לפי עמודה AW.
+# גרסה מתוקנת: סנכרון כמויות QPA ומפתחות מערכת (WIP / System Factor * QPA), 
+# סידור עץ BOM דינמי מתוך האקסל, ותיקוני תצוגת UI עקבית.
 
 import streamlit as st
 import pandas as pd
@@ -732,7 +731,7 @@ def check_password():
         return True
 
 if not check_password():
-    st.stop()  # עוצר את טעינת האפליקציה לחלוטין עד להזנת פרטים נכונים
+    st.stop() 
 
 # ==========================================================
 # GLOBAL THEME / CSS
@@ -780,9 +779,9 @@ footer {{visibility: hidden;}}
     margin-top: 6px;
 }}
 
-.kpi-card {{
-    background-color: var(--secondary-background-color);
-    color: var(--text-color);
+.kpi-card, .kanban-card {{
+    background-color: var(--secondary-background-color, #ffffff);
+    color: var(--text-color, #111827);
     border: 1px solid rgba(128,128,128,0.25);
     border-radius: 14px;
     padding: 18px 16px;
@@ -811,22 +810,6 @@ footer {{visibility: hidden;}}
 .kpi-red {{ border-top: 4px solid {DANGER}; }}
 .kpi-orange {{ border-top: 4px solid {WARNING}; }}
 .kpi-blue {{ border-top: 4px solid {ACCENT}; }}
-
-@media (prefers-color-scheme: light) {{
-    .kpi-card, .kanban-card {{
-        background-color: #ffffff !important;
-        color: #111827 !important;
-        border-color: #e5e7eb !important;
-    }}
-}}
-
-@media (prefers-color-scheme: dark) {{
-    .kpi-card, .kanban-card {{
-        background-color: #1f2937 !important;
-        color: #f9fafb !important;
-        border-color: #374151 !important;
-    }}
-}}
 
 .section-title {{
     font-weight: 800;
@@ -1151,8 +1134,8 @@ PN_COL = df.columns[1]
 DESC_COL = df.columns[4]
 ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
-PRICE_COL = df.columns[50] if len(df.columns) > 50 else df.columns[-1]  # עמודה AY - מחיר יחידה (PRICE_CALC)
-AW_COL = df.columns[48] if len(df.columns) > 48 else df.columns[-1]  # עמודה AW - סינון נוסף
+PRICE_COL = df.columns[50] if len(df.columns) > 50 else df.columns[-1]  
+AW_COL = df.columns[48] if len(df.columns) > 48 else df.columns[-1]  
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
 
@@ -1195,47 +1178,63 @@ for col in valid_assemblies:
     except:
         assembly_levels[col] = 0
 
-valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
-
 ASSEMBLY_BOM_TREE = {}
 ASSEMBLY_CHILDREN = {}
+ordered_assemblies_from_excel = []
 
 try:
     _level_stack = []
-    for _r in range(3, 29):
+    for _r in range(3, df_raw.shape[0]):
         _desc = df_raw.iloc[_r, 104]
         _level = df_raw.iloc[_r, 105]
         _pn = df_raw.iloc[_r, 106]
-        _qty = df_raw.iloc[_r, 107]
-        if pd.isna(_pn):
+        _qty = df_raw.iloc[_r, 107] 
+        
+        if pd.isna(_pn) or str(_pn).strip() == "":
             continue
+            
         _pn = str(_pn).strip()
         _level = int(_level) if pd.notnull(_level) else 0
-        _qty = safe_num(_qty, default=1.0)
+        _qty_per_system = safe_num(_qty, default=1.0) 
 
         while _level_stack and _level_stack[-1][0] >= _level:
             _level_stack.pop()
         _parent_pn = _level_stack[-1][1] if _level_stack else None
 
+        _parent_sys_qty = ASSEMBLY_BOM_TREE.get(_parent_pn, {}).get("qty_per_system", 1.0) if _parent_pn else 1.0
+        _qty_per_parent = _qty_per_system / _parent_sys_qty if _parent_sys_qty > 0 else 1.0
+
         ASSEMBLY_BOM_TREE[_pn] = {
-            "desc": str(_desc), "level": _level, "qty_per_parent": _qty, "parent": _parent_pn
+            "desc": str(_desc), 
+            "level": _level, 
+            "qty_per_system": _qty_per_system,
+            "qty_per_parent": _qty_per_parent,
+            "parent": _parent_pn
         }
+        
+        if _pn not in ordered_assemblies_from_excel:
+            ordered_assemblies_from_excel.append(_pn)
+
         if _parent_pn:
             ASSEMBLY_CHILDREN.setdefault(_parent_pn, []).append(_pn)
 
         _level_stack.append((_level, _pn))
-except Exception:
+except Exception as e:
+    st.error(f"Error parsing BOM: {e}")
     ASSEMBLY_BOM_TREE = {}
     ASSEMBLY_CHILDREN = {}
 
 if ASSEMBLY_BOM_TREE:
     ASSEMBLY_SYSTEM_FACTORS = {
-        pn: info["qty_per_parent"] for pn, info in ASSEMBLY_BOM_TREE.items() if info["qty_per_parent"] != 1
+        pn: info["qty_per_system"] for pn, info in ASSEMBLY_BOM_TREE.items() if info["qty_per_system"] != 1
     }
-    if not ASSEMBLY_SYSTEM_FACTORS:
-        ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
 else:
     ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
+
+valid_assemblies = sorted(
+    valid_assemblies, 
+    key=lambda x: ordered_assemblies_from_excel.index(x) if x in ordered_assemblies_from_excel else 999
+)
 
 if "custom_assembly_plan_df" not in st.session_state:
     cloud_plan = fetch_cloud_assembly_plan()
@@ -1374,7 +1373,8 @@ def get_component_available_by_month(pn, target_ym, inv_cache=None, wip_cache=No
             if wip_qty > 0 and asm_col in df.columns:
                 qty_per = safe_num(row0.get(asm_col, 0.0))
                 if qty_per > 0:
-                    wip_committed += qty_per * wip_qty
+                    sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_col, 1)
+                    wip_committed += (wip_qty / sys_factor) * qty_per
 
     return max(0.0, base_stock + manual_stock_effective + incoming_supply - wip_committed)
 
@@ -1464,7 +1464,6 @@ _override_item_types = set(
 item_types = sorted(set(item_types) | _override_item_types)
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types, key="selected_item_type")
 
-# הוספת סינון לעמודה AW במסננים המתקדמים
 aw_values = df[AW_COL].dropna().astype(str).unique().tolist() if AW_COL in df.columns else []
 aw_values = sorted(list(set(aw_values)))
 selected_aw = st.sidebar.selectbox("סינון לפי ספק או BFE ", ["הכל"] + aw_values, key="selected_aw")
@@ -1521,7 +1520,7 @@ if uploaded_eta_file is not None:
         st.sidebar.error(f"שגיאה בקריאת קובץ ה-ETA: {e}")
 
 # ==========================================================
-# OPTIMIZED SHORTAGE CALCULATION (CACHED & FIXED)
+# OPTIMIZED SHORTAGE CALCULATION
 # ==========================================================
 all_ym_list = sorted(list(set(assembly_plan_df["YearMonth"].unique())))
 start_idx = 0
@@ -1710,14 +1709,18 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
         month_breakdown = calculate_mrp_breakdown(target_yms=[ym])
 
         for asm_col in priority_order:
+            sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_col, 1)
             sub_plan_df = assembly_plan_df[(assembly_plan_df["YearMonth"] == ym) & (assembly_plan_df["Assembly_PN"] == asm_col)]
-            raw_build = sub_plan_df["Build_Qty"].sum() if not sub_plan_df.empty else 0.0
+            
+            raw_build = sub_plan_df["Raw_Build_Qty"].sum() if not sub_plan_df.empty else 0.0
             current_wip_qty = wip_cache.get(asm_col, 0.0)
 
-            if raw_build <= 0 and current_wip_qty <= 0:
+            discrete_plan_build = raw_build * sys_factor
+            remaining_plan_target = max(0.0, discrete_plan_build - current_wip_qty)
+
+            if discrete_plan_build <= 0 and current_wip_qty <= 0:
                 continue
 
-            remaining_plan_target = max(0.0, raw_build - current_wip_qty)
             asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
 
             max_possible_new_build = remaining_plan_target
@@ -1729,7 +1732,7 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                     if req_per > 0:
                         comp_pn = str(s_row["PN"]).strip()
                         avail = get_pool(comp_pn)
-                        possible = avail / req_per
+                        possible = (avail / req_per) * sys_factor
                         if possible < max_possible_new_build - 1e-9:
                             max_possible_new_build = possible
                             limiting_components = [comp_pn]
@@ -1758,7 +1761,7 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                         req_per = s_row["Qty_Per_Assembly"]
                         if req_per > 0:
                             comp_pn = str(s_row["PN"]).strip()
-                            consumed_amount = req_per * net_executable_qty
+                            consumed_amount = (net_executable_qty / sys_factor) * req_per
                             pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
                             consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
                 for child_pn in ASSEMBLY_CHILDREN.get(asm_col, []):
@@ -1771,7 +1774,7 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                     consumed_so_far[child_pn] = consumed_so_far.get(child_pn, 0.0) + consumed_amount
 
             result[(asm_col, ym)] = {
-                "raw_build": raw_build,
+                "raw_build": discrete_plan_build,
                 "gross_executable": net_executable_qty,
                 "net_executable": net_executable_qty,
                 "wip": current_wip_qty,
@@ -1794,6 +1797,7 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
     blockers = []
 
     if asm_pn in df.columns:
+        sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_pn, 1)
         for _, row in df.iterrows():
             qty_per = safe_num(row[asm_pn])
             if qty_per <= 0:
@@ -1802,7 +1806,7 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
             base_stock_check = safe_num(row[STOCK_COL])
             if base_stock_check >= 9000000:
                 continue
-            required = qty_per * requested_qty
+            required = (requested_qty / sys_factor) * qty_per
             available = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
             if available < required:
                 blockers.append({
@@ -1832,6 +1836,8 @@ def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cach
     if asm_pn not in df.columns:
         return max_qty, limiting_component
 
+    sys_factor = ASSEMBLY_SYSTEM_FACTORS.get(asm_pn, 1)
+
     for _, row in df.iterrows():
         qty_per = safe_num(row[asm_pn])
         if qty_per <= 0:
@@ -1841,7 +1847,7 @@ def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cach
         if base_stock_check >= 9000000:
             continue
         avail = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
-        possible = avail / qty_per
+        possible = (avail / qty_per) * sys_factor
         if possible < max_qty:
             max_qty = possible
             limiting_component = comp_pn
