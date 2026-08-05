@@ -721,6 +721,13 @@ st.set_page_config(
 # ==========================================================
 # AUTHENTICATION GATE (שכבת הגנה למערכת)
 # ==========================================================
+# תומך במספר משתמשים/סיסמאות שונים - כל צמד username/password מוגדר
+# ב-st.secrets["passwords"] (לא בקוד עצמו, כדי שלא יהיה חשוף בגיטהאב
+# ציבורי). כדי להוסיף משתמש חדש, מוסיפים שורה תחת [passwords] בקובץ
+# secrets.toml (או בהגדרות Secrets ב-Streamlit Cloud):
+#   [passwords]
+#   oren = "הסיסמה-שלך-כאן"
+#   manager2 = "סיסמה-אחרת"
 def check_password():
     def password_entered():
         if st.secrets["passwords"].get(st.session_state["username"]) == st.session_state["password"]:
@@ -748,6 +755,7 @@ def check_password():
 
 if not check_password():
     st.stop()  # עוצר את טעינת האפליקציה לחלוטין עד להזנת פרטים נכונים
+
 # ==========================================================
 # GLOBAL THEME / CSS
 # ==========================================================
@@ -2871,7 +2879,7 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
 
 elif nav_page == "🏆 קיבולת ייצור מקסימלית":
     # ==========================================================
-    # טאב חדש: קיבולת ייצור מקסימלית תיאורטית לכל הרכבה
+    # קיבולת ייצור מקסימלית תיאורטית לכל הרכבה
     # ==========================================================
     # שימו לב: זו שאלה שונה מ"ניתן לייצור" בטאב 2 (Smart CTB). טאב 2
     # עונה על "כמה מתוך התוכנית *המתוכננת* אפשר לבנות החודש" (מוגבל
@@ -2890,11 +2898,20 @@ elif nav_page == "🏆 קיבולת ייצור מקסימלית":
     # הלוגיקה עצמה (get_component_available_by_month, ASSEMBLY_BOM_TREE)
     # זהה לחלוטין למה שכבר תוקן ואומת בטאבים אחרים - כולל ETA (זמין רק
     # מחודש לפני), ניכוי מלאי שכבר נצרך ב-WIP, והיררכיית BOM רקורסיבית.
+    #
+    # תיקון (סינטקס): הגרסה הקודמת השתמשה ב-f-string עם גרש בתוך שם
+    # עמודה (יח') בתוך ה-{} של ה-f-string, וכדי "לברוח" ממנו הוסיפה
+    # backslash. זה תקין ב-Python 3.12+ בלבד (PEP 701) - בגרסאות
+    # Python נפוצות יותר על Streamlit Cloud (3.9-3.11) זו שגיאת
+    # SyntaxError. עכשיו הערכים נשלפים למשתנים רגילים לפני העיצוב,
+    # בלי backslash בתוך שום f-string - תואם לכל גרסת Python.
     st.markdown('<div class="section-title">🏆 קיבולת ייצור מקסימלית לכל הרכבה</div>', unsafe_allow_html=True)
     st.caption(
         "כמה יחידות מכל הרכבה ניתן היה לייצר תיאורטית עד חודש נתון, בהתבסס על מלאי + אספקה עם ETA שכבר חל + ניכוי מה שכבר נצרך ב-WIP - "
         "ללא קשר לתוכנית הייצור המתוכננת. חישוב זה מבוצע לכל הרכבה בנפרד (תקרת קיבולת עליונה), ולא מחלק מלאי משותף בין הרכבות כמו בטאב 'תוכנית ייצור'."
     )
+
+    CAP_COL = "קיבולת מקסימלית (יחידות)"  # שם עמודה בלי גרש - נמנע מכל בעיית ציטוט עתידית
 
     cap_target_month_label = st.selectbox(
         "עד איזה חודש לבדוק זמינות (כולל אספקה עם ETA עד לפני חודש זה)",
@@ -2915,35 +2932,43 @@ elif nav_page == "🏆 קיבולת ייצור מקסימלית":
             "קוד הרכבה": asm_col,
             "תיאור": assembly_mapping.get(asm_col, asm_col),
             "רמה בעץ": assembly_levels.get(asm_col, 0),
-            "קיבולת מקסימלית (יח')": round(max_qty, 1),
-            "כבר ב-WIP (יח')": current_wip_qty,
+            CAP_COL: round(max_qty, 1),
+            "כבר ב-WIP (יחידות)": current_wip_qty,
             "רכיב/הרכבה מגבילים": limiting if limiting else "—"
         })
+
+    cap_df = pd.DataFrame(cap_rows).sort_values(["רמה בעץ", CAP_COL], ascending=[True, False])
 
     col_cap1, col_cap2 = st.columns([1, 1])
     with col_cap1:
         if not cap_df.empty:
-            top_num = cap_df.iloc[0]["קיבולת מקסימלית (יח')"]
-            top_val = f"{top_num:,.0f} יח'"
-            top_asm = cap_df.iloc[0]["קוד הרכבה"]
+            top_row = cap_df.iloc[0]
+            top_asm_name = top_row["קוד הרכבה"]
+            top_asm_value = f"{top_row[CAP_COL]:,.0f} יחידות"
         else:
-            top_val = ""
-            top_asm = "—"
-        st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", top_asm, top_val)
-        
+            top_asm_name = "—"
+            top_asm_value = ""
+        st.metric("🏆 ההרכבה עם הקיבולת הגבוהה ביותר", top_asm_name, top_asm_value)
+
     with col_cap2:
         if not cap_df.empty:
-            bottleneck_row = cap_df.loc[cap_df["קיבולת מקסימלית (יח')"].idxmin()]
-            bt_num = bottleneck_row["קיבולת מקסימלית (יח')"]
-            bt_val = f"{bt_num:,.0f} יח'"
-            bt_asm = bottleneck_row["קוד הרכבה"]
+            bottleneck_row = cap_df.loc[cap_df[CAP_COL].idxmin()]
+            bottleneck_asm_name = bottleneck_row["קוד הרכבה"]
+            bottleneck_asm_value = f"{bottleneck_row[CAP_COL]:,.0f} יחידות"
         else:
-            bt_val = ""
-            bt_asm = "—"
-        st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bt_asm, bt_val)
-        hover_data=["תיאור", "רכיב/הרכבה מגבילים"]
-    )
-    fig_cap.update_layout(template=PLOTLY_TEMPLATE, height=max(400, 28 * len(cap_df)), margin=dict(t=10, b=10, l=10, r=10))
-    st.plotly_chart(fig_cap, use_container_width=True)
+            bottleneck_asm_name = "—"
+            bottleneck_asm_value = ""
+        st.metric("🔻 ההרכבה עם הקיבולת הנמוכה ביותר (צוואר בקבוק)", bottleneck_asm_name, bottleneck_asm_value)
 
-    st.dataframe(cap_df, use_container_width=True, height=420)
+    if not cap_df.empty:
+        fig_cap = px.bar(
+            cap_df.sort_values(CAP_COL, ascending=True),
+            x=CAP_COL, y="קוד הרכבה", orientation='h',
+            color=CAP_COL, color_continuous_scale="Blues",
+            hover_data=["תיאור", "רכיב/הרכבה מגבילים"]
+        )
+        fig_cap.update_layout(template=PLOTLY_TEMPLATE, height=max(400, 28 * len(cap_df)), margin=dict(t=10, b=10, l=10, r=10))
+        st.plotly_chart(fig_cap, use_container_width=True)
+        st.dataframe(cap_df, use_container_width=True, height=420)
+    else:
+        st.info("אין הרכבות זמינות לחישוב קיבולת מקסימלית עבור החודש שנבחר.")
