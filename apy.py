@@ -1190,11 +1190,17 @@ try:
         _pn = df_raw.iloc[_r, 106]
         _qty = df_raw.iloc[_r, 107] 
         
-        if pd.isna(_pn) or str(_pn).strip() == "":
+        # דילוג על שורות ריקות או שורות כותרת (כמו 'LEVEL')
+        if pd.isna(_pn) or str(_pn).strip() == "" or str(_level).strip().upper() == "LEVEL":
             continue
             
         _pn = str(_pn).strip()
-        _level = int(_level) if pd.notnull(_level) else 0
+        
+        try:
+            _level = int(_level)
+        except (ValueError, TypeError):
+            continue # אם הערך הוא לא מספר תקין (כמו כותרת), דלג עליו
+            
         _qty_per_system = safe_num(_qty, default=1.0) 
 
         while _level_stack and _level_stack[-1][0] >= _level:
@@ -1223,7 +1229,6 @@ except Exception as e:
     st.error(f"Error parsing BOM: {e}")
     ASSEMBLY_BOM_TREE = {}
     ASSEMBLY_CHILDREN = {}
-
 if ASSEMBLY_BOM_TREE:
     ASSEMBLY_SYSTEM_FACTORS = {
         pn: info["qty_per_system"] for pn, info in ASSEMBLY_BOM_TREE.items() if info["qty_per_system"] != 1
