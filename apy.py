@@ -1434,7 +1434,7 @@ try:
 except:
     selected_ym = str(selected_month_col)[:7]
 
-num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=1, max_value=6, value=1, key="num_months_ahead")
+num_months_ahead = st.sidebar.slider("📅 טווח מבט קדימה במספר חודשים", min_value=6, max_value=1, value=1, key="num_months_ahead")
 
 level_options = ["הכל"] + sorted(list(set(str(assembly_levels[c]) for c in valid_assemblies)), key=lambda x: int(x) if x.isdigit() else 0)
 selected_level = st.sidebar.selectbox("סינון לפי רמת עץ (BOM Level)", level_options, key="selected_level")
