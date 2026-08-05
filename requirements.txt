@@ -1,7 +1,6 @@
-streamlit>=1.41.0
+streamlit
 pandas>=2.0.0
 plotly>=5.0.0
 openpyxl>=3.0.0
 supabase>=2.0.0
 requests>=2.25.0
-starlette>=0.40.0
