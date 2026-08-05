@@ -6,3 +6,9 @@ openpyxl
 supabase
 requests
 matplotlib
+streamlit>=1.35.0,<1.38.0
+pandas>=2.0.0
+plotly>=5.0.0
+openpyxl>=3.0.0
+supabase>=2.0.0
+requests>=2.25.0
