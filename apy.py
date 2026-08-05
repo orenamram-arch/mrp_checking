@@ -1,7 +1,7 @@
 # MRP Control Tower — מגדל בקרת חוסרים
 # גרסה מתוקנת: תיקון באג תאריכים בתוכנית ההרכבה, תיקון באג NaN בהמרות
 # מספריות, תיקון שליפת ETA בסיסי מה-MRP, ותיקון הצטברות מלאי לפי ETA.
-# ראו הערות "תיקון קריטי" לאורך הקובץ.
+# כולל תוספת סינון לפי עמודה AW.
 
 import streamlit as st
 import pandas as pd
@@ -17,9 +17,6 @@ from supabase import create_client, Client
 # HELPERS
 # ==========================================================
 def safe_num(value, default=0.0):
-    # תיקון קריטי: pd.to_numeric(x, errors='coerce') מחזיר NaN לתאים לא-תקינים,
-    # אבל NaN הוא "truthy" בפייתון, ולכן התבנית הישנה 'X or 0' לא באמת הופכת
-    # NaN ל-0. safe_num מטפל בזה נכון עם pd.isna().
     n = pd.to_numeric(value, errors='coerce')
     if pd.isna(n):
         return default
@@ -30,12 +27,6 @@ def safe_num(value, default=0.0):
 # ==========================================================
 GITHUB_URL = "https://raw.githubusercontent.com/orenamram-arch/mrp_checking/main/mrp.xlsx"
 
-# תיקון: זהו ערך ברירת מחדל/גיבוי בלבד. הפקטורים האמיתיים נגזרים
-# אוטומטית מתוך עמודת "QTY PER ASSY" בטבלת עץ ההרכבות שבקובץ עצמו
-# (ראו ASSEMBLY_SYSTEM_FACTORS המחושב בהמשך, אחרי טעינת הנתונים) - כי
-# התברר שהרשימה הידנית הזו הייתה חסרה לפחות פריט אחד (6930N127-001,
-# שפקטור האמת שלו הוא 2 ולא 1 כברירת המחדל). אם טעינת הקובץ נכשלת
-# מכל סיבה, המערכת תיפול חזרה לרשימה הידנית הזו.
 ASSEMBLY_SYSTEM_FACTORS_FALLBACK = {
     "1096G860-002": 4,
     "1093U447-001": 4,
@@ -45,12 +36,6 @@ ASSEMBLY_SYSTEM_FACTORS_FALLBACK = {
 }
 ASSEMBLY_SYSTEM_FACTORS = dict(ASSEMBLY_SYSTEM_FACTORS_FALLBACK)
 
-# ==========================================================
-# רשימת ספקים ברירת מחדל (מצורפת ע"י המשתמש, לפי BOM)
-# ==========================================================
-# מקור: רשימה שהתקבלה מהמשתמש (מק"ט -> ספק) לפי ה-BOM המלא. משמשת:
-# 1) לייבוא מרוכז חד-פעמי ל-DB (כפתור בטאב "עריכת ETA מרוכזת")
-# 2) כברירת מחדל תצוגתית לפני שהערך נשמר בפועל ב-DB
 DEFAULT_SUPPLIER_MAP = {
     "6932T100-001": "הרכבה באופק",
     "02015J1R0PBSTR": "פיניקס טכנולוגיות בע\"מ",
@@ -530,7 +515,7 @@ DEFAULT_SUPPLIER_MAP = {
     "LMK00105SQE/NOPB": "אלבטק תעשייה ולוגיסטיקה בע\"מ",
     "LMX2592RHAT": "אלבטק תעשייה ולוגיסטיקה בע\"מ",
     "LOCTITE 222-50CC": "רוטל דבקים וכימיקלים בע\"מ",
-    "LOCTITE 263-50CC": "האאס טי סי אמ אוף ישראל אינק.",
+    "LOCTITE 263-50CC": "האאס טי סי אמ 오ף ישראל אינק.",
     "LQW03AW10NJ00D": "ARROW",
     "LQW03AW5N8J00D": "ARROW",
     "LQW03AW6N8J00D": "מאוזר",
@@ -869,7 +854,6 @@ footer {{visibility: hidden;}}
     font-size: 13px;
 }}
 
-/* ============ שיפור ויזואלי: פס תקציר מנהלים + טאבים ============ */
 .exec-summary-strip {{
     display: flex;
     flex-wrap: wrap;
@@ -903,7 +887,6 @@ footer {{visibility: hidden;}}
 }}
 .exec-stat-label {{ font-size: 12px; opacity: 0.75; font-weight: 600; margin-top: 2px; }}
 
-/* תיקון ניווט: כפתורי popover קומפקטיים בשורה אחת + חלוניות קופצות */
 .nav-bar-label {{
     font-weight: 700;
     font-size: 13px;
@@ -924,7 +907,6 @@ div[data-testid="stPopover"] > button:hover {{
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(79,70,229,0.35);
 }}
-/* כפתורי הבחירה בתוך החלונית הקופצת עצמה */
 [data-testid="stPopoverBody"] button[kind="secondary"],
 [data-testid="stPopoverBody"] button[kind="primary"] {{
     text-align: right !important;
@@ -1017,11 +999,8 @@ def get_inventory_record(pn, cache=None):
             res["updated_at"]
         )
     return 0.0, "", "פתוח", "אופק", "", "", ""
+
 def get_effective_item_type(pn, original_type, cache=None):
-    # שיפור: מאפשר לערוך את "סוג פריט" (עמודה AS) ולשמור את השינוי ב-DB,
-    # מבלי לגעת בקובץ המקור מ-GitHub. אם קיימת ב-DB דריסה ידנית (item_type)
-    # לאותו מק"ט - היא זו שתוצג ותשמש לכל החישובים/סינונים. אם אין דריסה,
-    # ממשיכים להשתמש בערך המקורי מעמודה AS בקובץ, בדיוק כמו קודם.
     all_recs = cache if cache is not None else fetch_all_inventory_records()
     res = all_recs.get(str(pn).strip())
     if res:
@@ -1029,8 +1008,7 @@ def get_effective_item_type(pn, original_type, cache=None):
         if override and str(override).strip() not in ["", "None", "nan"]:
             return str(override)
     return original_type
-    
-        
+     
 @st.cache_data(ttl=60)
 def fetch_wip_records():
     try:
@@ -1066,10 +1044,6 @@ def delete_wip_record(assembly_pn):
         st.error(f"שגיאה במחיקת WIP מ-Supabase: {e}")
 
 def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url="", item_type=None):
-    # שיפור: פרמטר item_type אופציונלי (ברירת מחדל None) כדי לא לשבור אף
-    # קריאה קיימת לפונקציה הזו. כשלא מועבר item_type מפורש (למשל בשמירת
-    # ETA/מלאי/סטטוס רגילה), שומרים על ערך "סוג פריט" הקיים כרגע ב-DB
-    # לאותו מק"ט, כדי לא למחוק אותו בטעות.
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     if item_type is None:
         existing_rec = fetch_all_inventory_records().get(str(pn).strip(), {})
@@ -1102,11 +1076,6 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
             pass
 
 def bulk_update_suppliers(supplier_map, inv_cache=None):
-    """
-    עדכון ספק מרוכז לרשימת מק"טים ב-DB - קריאת batch יחידה (לא לולאה
-    של מאות קריאות בודדות), ושומר על שאר שדות הרשומה הקיימת (added_stock,
-    eta, status, comment) לכל מק"ט - מעדכן רק את שדה הספק.
-    """
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
@@ -1183,15 +1152,10 @@ DESC_COL = df.columns[4]
 ITEM_TYPE_COL = df.columns[44] if len(df.columns) > 44 else df.columns[-1]
 STOCK_COL = df.columns[79] if len(df.columns) > 79 else df.columns[-1]
 PRICE_COL = df.columns[50] if len(df.columns) > 50 else df.columns[-1]  # עמודה AY - מחיר יחידה (PRICE_CALC)
+AW_COL = df.columns[48] if len(df.columns) > 48 else df.columns[-1]  # עמודה AW - סינון נוסף
 ASSEMBLY_COLS = df.columns[10:36].tolist()
 MONTH_COLS = df.columns[108:132].tolist() if len(df.columns) > 132 else []
 
-# ==========================================================
-# שיפור: בדיקת תקינות אוטומטית למבנה כותרות התאריכים
-# ==========================================================
-# מגלה אוטומטית אם קובץ ה-Excise (מה-GitHub) חזר על אותו באג שתיקנו -
-# חודשים כפולים בכותרת - כך שאם הקובץ ישתנה בעתיד, המשתמש יקבל התרעה
-# ברורה בממשק במקום חישוב שקט ושגוי.
 def _validate_month_headers(month_cols):
     warnings_list = []
     ym_list = []
@@ -1233,24 +1197,11 @@ for col in valid_assemblies:
 
 valid_assemblies = sorted(valid_assemblies, key=lambda x: (assembly_levels.get(x, 0), str(x)))
 
-# ==========================================================
-# תיקון + שיפור: פענוח עץ ההרכבות האמיתי מהקובץ (BOM היררכי)
-# ==========================================================
-# בטבלה בשורות 3-28 (עמודות DESC/LEVEL/PN/QTY PER ASSY, עמודות 104-107)
-# יש עץ הרכבות מלא: כל שורה = הרכבה אחת, עם רמת עומק (LEVEL) וכמות
-# ליחידת ההורה הישיר שלה (QTY PER ASSY). זהו "BOM מוזח" קלאסי - ההורה
-# של כל שורה הוא השורה הקרובה שלפניה עם LEVEL נמוך ב-1.
-#
-# תיקון: הקוד המקורי לא השתמש בטבלה הזו כלל להיררכיה, ובמקום זה
-# הסתמך על מילון קשיח (ASSEMBLY_SYSTEM_FACTORS) עם 5 פריטים בלבד -
-# שהתברר שחסר בו לפחות פריט אחד עם פקטור שונה מ-1 (6930N127-001,
-# פקטור אמיתי=2). כאן אנחנו גוזרים את הפקטורים ישירות מהקובץ, לכל
-# 26 ההרכבות, ובנוסף בונים עץ הורה-ילד מלא לבדיקת זמינות היררכית ב-WIP.
-ASSEMBLY_BOM_TREE = {}     # pn -> {"desc","level","qty_per_parent","parent"}
-ASSEMBLY_CHILDREN = {}     # parent_pn -> [child_pn, ...]
+ASSEMBLY_BOM_TREE = {}
+ASSEMBLY_CHILDREN = {}
 
 try:
-    _level_stack = []  # [(level, pn), ...] מהשורש ועד הענף הנוכחי
+    _level_stack = []
     for _r in range(3, 29):
         _desc = df_raw.iloc[_r, 104]
         _level = df_raw.iloc[_r, 105]
@@ -1291,25 +1242,6 @@ if "custom_assembly_plan_df" not in st.session_state:
     if not cloud_plan.empty:
         st.session_state["custom_assembly_plan_df"] = cloud_plan
     else:
-        # ==========================================================
-        # תיקון קריטי: באג תאריכים בכותרת טבלת תוכנית ההרכבה
-        # ==========================================================
-        # בקובץ המקור, שורת הכותרת של טבלת תוכנית ההרכבה (df_raw שורה 2,
-        # עמודות 108 ואילך) "שבורה": השנה לא מתקדמת כמו שצריך, ובמקום זה
-        # יש שני בלוקים של 12 חודשים (ינואר-דצמבר) שמסומנים שניהם "2026"
-        # (רק היום בחודש שונה - 26 מול 27). בפועל, הבלוק השני הוא נתוני
-        # השנה הבאה (2027), לא חזרה על 2026. הקוד המקורי קרא את התאריכים
-        # משורה 2 ולכן שיוך כל ה-Build_Qty של השנה השנייה יוחס בטעות
-        # לחודשים המקבילים בשנה הראשונה (למשל ייצור מתוכנן ל-2027-01 נספר
-        # כאילו הוא ב-2026-01) - מה שמערבב תוכניות ייצור בין שנים ומעוות
-        # לגמרי את חישובי החוסרים לטווח הארוך.
-        #
-        # שורת הכותרת של הטבלה הראשית (df, header=29) לעומת זאת תקינה
-        # לחלוטין באותו טווח עמודות בדיוק (108-131: ינואר 2026 עד דצמבר
-        # 2027 ברצף, ללא כפילות). מכיוון שהעמודות מיושרות 1:1 בין שתי
-        # הטבלאות, אנחנו משתמשים בתאריכי הכותרת התקינים של הטבלה הראשית
-        # (MONTH_COLS) גם עבור טבלת תוכנית ההרכבה, במקום בתאריכים השבורים
-        # משורה 2.
         if len(MONTH_COLS) >= 24:
             header_dates = list(MONTH_COLS[:24])
         else:
@@ -1345,25 +1277,8 @@ if "custom_assembly_plan_df" not in st.session_state:
 
 assembly_plan_df = st.session_state["custom_assembly_plan_df"]
 
-# ==========================================================
-# תיקון קריטי: מיפוי תאריכים אמיתי לעמודות לוח האספקה הפריטני
-# ==========================================================
-# הקוד המקורי בנה raw_eta_dates משורה 2 בלבד (df_raw.iloc[2, :]).
-# הבעיה: שורה 2 ריקה (NaN) בדיוק בטווח העמודות 80-103, שבו נמצא לוח
-# האספקה הצפויה בפועל לכל פריט (כמויות הזמנות פתוחות לפי תאריך יעד).
-# כתוצאה מכך הפונקציה דילגה על הבלוק האמיתי הזה לגמרי, וקפצה ישר
-# לעמודות 108 ואילך (עמודות היתרה החודשית הנטו של ה-MRP), שהן דבר שונה
-# לחלוטין מ"תאריך ההגעה של אספקה מתוכננת" - ולכן ה-ETA שהוצג בכרטיסי
-# הפריטים לא שיקף אספקה אמיתית אלא את החודש הראשון שבו היתרה הנטו
-# חיובית (מה שכבר תלוי בעצמו בכל שרשרת החישוב).
-#
-# בנוסף, שורת הכותרת עצמה (שורה 29) בטווח 80-103 סובלת מאותו באג שנה
-# שתיקנו למעלה בתוכנית ההרכבה: 12 העמודות הראשונות מתויגות "2026" (יום
-# 26) ו-12 הבאות מתויגות שוב "2026" (יום 27) במקום "2027". אנחנו מתקנים
-# את זה כאן באותו אופן - הבלוק השני מקודם בשנה אחת.
 def _build_supply_date_map():
     date_map = {}
-    # בלוק אספקה פריטני: עמודות 80-103 (24 עמודות, מקור: שורת כותרת 29)
     supply_start = 80
     for i in range(24):
         col_pos = supply_start + i
@@ -1371,13 +1286,11 @@ def _build_supply_date_map():
             break
         year_offset = 0 if i < 12 else 1
         month = (i % 12) + 1
-        base_year = 2026  # שנת הבסיס של תוכנית זו, כפי שמופיעה בקובץ
+        base_year = 2026
         try:
             date_map[col_pos] = pd.Timestamp(year=base_year + year_offset, month=month, day=1)
         except Exception:
             pass
-    # בלוק יתרת MRP חודשית: עמודות 108-131 - התאריכים כאן כבר תקינים
-    # ורציפים בשורה הראשית (df, header=29), אז פשוט קוראים אותם משם.
     for i, col in enumerate(MONTH_COLS[:24]):
         col_pos = 108 + i
         if pd.notnull(col):
@@ -1390,9 +1303,6 @@ def _build_supply_date_map():
 SUPPLY_DATE_MAP = _build_supply_date_map()
 
 def get_base_mrp_eta_and_qty(pn):
-    # מחזיר (YearMonth, כמות) של האספקה/היתרה הראשונה החיובית עבור מק"ט,
-    # לפי לוח האספקה הפריטני (עמודות 80-103) קודם, ואם לא נמצא - לפי
-    # היתרה החודשית הנטו של ה-MRP (עמודות 108-131) כגיבוי.
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if matching_rows.empty:
         return "בדיקה נדרשת", 0.0
@@ -1417,21 +1327,6 @@ def get_base_mrp_qty(pn):
     _, qty = get_base_mrp_eta_and_qty(pn)
     return qty
 
-# ==========================================================
-# תיקון קריטי: זמינות עתידית לפי ETA - לא רק מלאי נוכחי בקופה
-# ==========================================================
-# זה בדיוק המנגנון הבסיסי של MRP שציינת: פריט לא חייב להיות כבר
-# פיזית במלאי כדי שהתוכנית תיחשב אפשרית - מספיק שה-ETA שלו חל **לפני**
-# חודש הבנייה המתוכנן (חודש קודם, לא אותו חודש עצמו - כי אין ודאות
-# שהפריט יגיע *לפני* שהבנייה בפועל מתחילה בתוך חודש היעד עצמו). לכן,
-# זמינות של רכיב לחודש יעד נתון היא: מלאי נוכחי (STOCK) + כל האספקה
-# הצפויה מלוח ה-PO הפריטני (עמודות 80-103) שה-ETA שלה קודם לחודש
-# היעד (לא כולל אותו חודש) + תוספת מלאי ידנית שנרשמה עם ETA שכבר חל
-# בחודש קודם לחודש היעד.
-#
-# תיקון (בעקבות משוב נוסף): בגרסה הקודמת השתמשתי ב-"<=" (כולל את אותו
-# חודש) - זו הייתה טעות. הכלל הנכון, כפי שהוגדר: "במלאי, או שה-ETA
-# הוא חודש לפני התוכנית" - כלומר "<" (קודם, לא כולל).
 def get_cumulative_incoming_supply(pn, target_ym):
     matching_rows = df_raw[df_raw.iloc[:, 1].astype(str).str.strip() == str(pn).strip()]
     if matching_rows.empty:
@@ -1440,7 +1335,7 @@ def get_cumulative_incoming_supply(pn, target_ym):
     total = 0.0
     for col_pos, dt in SUPPLY_DATE_MAP.items():
         if col_pos > 103:
-            continue  # רק בלוק לוח האספקה הפריטני (80-103), לא עמודות היתרה החודשית
+            continue
         try:
             ym = dt.strftime("%Y-%m")
             if ym < target_ym:
@@ -1471,12 +1366,6 @@ def get_component_available_by_month(pn, target_ym, inv_cache=None, wip_cache=No
 
     incoming_supply = get_cumulative_incoming_supply(pn, target_ym)
 
-    # תיקון קריטי: מלאי שכבר "נתפס" ע"י WIP קיים. הרכבה שנמצאת כרגע
-    # ב-WIP כבר משכה בפועל מהמחסן את כל הרכיבים הדרושים לה - כלומר
-    # הכמות הזו כבר לא באמת זמינה לאף אחד אחר, גם אם ה-STOCK הבסיסי
-    # בקובץ "לא יודע" את זה (כי ה-WIP הוא רשומה שנוספה באפליקציה,
-    # אחרי ייצוא הקובץ המקורי, ולכן לא כבר מגולמת ב-STOCK). זה חל תמיד,
-    # לכל חודש יעד שנבדק - כי הצריכה כבר קרתה בפועל, לא רק בעתיד.
     wip_committed = 0.0
     if not match.empty and wip_cache:
         row0 = match.iloc[0]
@@ -1505,7 +1394,7 @@ supplier_options = ["אופק", "ספק פנימי", "רכש אחר", "אחר"]
 st.sidebar.header("🔍 מסננים מתקדמים")
 
 if st.sidebar.button("🧹 איפוס כל המסננים (Clear All)"):
-    keys_to_clear = ["selected_month_label", "num_months_ahead", "selected_level", "selected_assembly", "selected_item_type", "selected_search_item"]
+    keys_to_clear = ["selected_month_label", "num_months_ahead", "selected_level", "selected_assembly", "selected_item_type", "selected_search_item", "selected_aw"]
     for k in keys_to_clear:
         if k in st.session_state:
             del st.session_state[k]
@@ -1574,6 +1463,11 @@ _override_item_types = set(
 )
 item_types = sorted(set(item_types) | _override_item_types)
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types, key="selected_item_type")
+
+# הוספת סינון לעמודה AW במסננים המתקדמים
+aw_values = df[AW_COL].dropna().astype(str).unique().tolist() if AW_COL in df.columns else []
+aw_values = sorted(list(set(aw_values)))
+selected_aw = st.sidebar.selectbox("סינון לפי עמודה AW", ["הכל"] + aw_values, key="selected_aw")
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
 selected_search_item = st.sidebar.selectbox("🔎 חיפוש מהיר (בחר או הקלד מק'ט/תיאור)", item_choices, key="selected_search_item")
@@ -1663,24 +1557,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         saved_stock_add, manual_eta, _, _, _, _, _ = get_inventory_record(pn, inv_cache)
         sim_val = sim_extra_stock_dict.get(pn, 0.0)
 
-        # ==========================================================
-        # תיקון קריטי: מלאי מצטבר שמכבד את חודש ה-ETA שלו
-        # ==========================================================
-        # הקוד המקורי החיל את כל תוספת המלאי (total_added_stock) על כל
-        # חודש שנבדק, כולל חודשים שקודמים לתאריך ההגעה (ETA) שהמשתמש
-        # עצמו רשם לאותה תוספת - כאילו המלאי כבר זמין גם *לפני* שהוא
-        # בכלל הגיע. בהמשך הפונקציה היה גם בלוק "תיקון" שניסה לנטרל את
-        # זה עבור ETA עתידי מדי, אבל הוא בפועל לא עשה כלום (no-op: הוא
-        # החיל abs() על ערך שכבר שלילי, בלי לשנות אותו).
-        #
-        # התיקון האמיתי: תוספת מלאי שנשמרה עם ETA מוגדר משפיעה רק
-        # החל מהחודש שאחרי חודש ה-ETA שלה (זה בדיוק ה"מצטבר קדימה"
-        # שביקשת) - היא לא "נעלמת" בחודשים שאחרי, אבל גם לא מוחלת לא
-        # בחודש ה-ETA עצמו ולא לפניו, כי אין ודאות שהיא מגיעה *לפני*
-        # שהבנייה בפועל מתחילה בתוך אותו חודש (בדיוק כפי שהובהר: "או
-        # שהמלאי במלאי, או שה-ETA שלו הוא חודש לפני התוכנית"). תוספת
-        # בלי ETA (או תוספת מסימולציית What-If) ממשיכה להיחשב זמינה
-        # מיידית, כברירת מחדל.
         manual_eta_ym = None
         if manual_eta and str(manual_eta).strip() not in ["", "None", "NaT", "nan"]:
             try:
@@ -1716,7 +1592,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
     mrp_shortages['Total_MRP_Shortage'] = mrp_shortages['Monthly_Balance'].abs()
 
     month_plan = active_plan_df[active_plan_df["YearMonth"].isin(target_yms_tuple)]
-    # תיקון קריטי: חישוב דרישות MRP מבוסס אך ורק על Raw_Build_Qty הגולמי משום שהעץ בקובץ כבר כולל את הפקטורים
     plan_dict = month_plan.groupby("Assembly_PN")["Raw_Build_Qty"].sum().to_dict()
 
     for asm_wip, wip_qty in wip_cache.items():
@@ -1726,10 +1601,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
             plan_dict[asm_wip] = max(0.0, plan_dict[asm_wip] - raw_wip_qty)
 
     breakdown_rows = []
-    # תיקון קריטי: עמודת "מלאי" בטבלת החוסרים תשקף עכשיו את אותה
-    # זמינות מתחשבת-ETA כמו כל שאר המערכת (מלאי + אספקה שה-ETA שלה חל
-    # עד סוף טווח החודשים הנבדק) - כדי שלא יהיה פער בין מה שמוצג כאן
-    # לבין מה שקובע בפועל אם הרכבה "ניתנת לייצור" בטאבים אחרים.
     reference_ym = max(target_yms_tuple) if target_yms_tuple else None
 
     for idx, row in mrp_shortages.iterrows():
@@ -1739,7 +1610,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         item_type = get_effective_item_type(pn, original_item_type, inv_cache)
 
         if reference_ym:
-            # תיקון קריטי: כולל עכשיו גם ניכוי מלאי שכבר "נתפס" ע"י WIP קיים
             stock = get_component_available_by_month(pn, reference_ym, inv_cache, wip_cache) + sim_extra_stock_dict.get(pn, 0.0)
         else:
             base_stock = safe_num(row[STOCK_COL])
@@ -1748,8 +1618,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
 
         total_mrp_shortage = row['Total_MRP_Shortage']
         _, _, item_status, current_sup, _, _, _ = get_inventory_record(pn, inv_cache)
-        # שיפור: מחיר יחידה מעמודה AY (PRICE_COL) וערך כספי של החוסר -
-        # לשימוש בגרף "TOP 10 חוסרים לפי ערך" בדשבורד.
         unit_price = safe_num(row[PRICE_COL])
         shortage_value = total_mrp_shortage * unit_price
 
@@ -1758,15 +1626,6 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
         findchips_link = f"https://www.findchips.com/search/{pn}"
 
         added_for_this_pn = False
-        # תיקון קריטי: כאן חייבים לעבור על *כל* ההרכבות (ASSEMBLY_COLS),
-        # לא רק filtered_assembly_cols. filtered_assembly_cols מסונן לפי
-        # "סינון לפי רמת עץ (BOM Level)" בסיידבר - סינון שמיועד לתצוגה
-        # בלבד. אם הוא היה בשימוש כאן, אז כל עוד מסנן הרמה בסיידבר לא
-        # מוגדר בדיוק לרמה של הרכבה מסוימת (או "הכל"), אותה הרכבה הייתה
-        # "נעלמת" לגמרי מחישוב זיהוי החוסרים הבסיסי - וכתוצאה מכך
-        # asm_shortages שלה תמיד היה יוצא ריק, בלי שום קשר לזמינות
-        # האמיתית של הרכיבים שלה. זו בדיוק הסיבה שהובילה לתוצאות לא
-        # עקביות בין הרצות עם סינוני רמה שונים בסיידבר.
         for asm in ASSEMBLY_COLS:
             qty_per_asm = safe_num(row[asm])
             if qty_per_asm > 0:
@@ -1782,6 +1641,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
                     "Required_Demand": required_demand,
                     "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                     "Unit_Price": unit_price, "Shortage_Value": shortage_value,
+                    "AW_Data": str(row.get(AW_COL, "")).strip(),
                     "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
                 })
 
@@ -1791,6 +1651,7 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
                 "Status": item_status, "Assembly": "ללא שיוך", "Assembly_Desc": "ללא שיוך להרכבה", "Qty_Per_Assembly": 0,
                 "Assembly_Monthly_Build": 0, "Required_Demand": 0, "Stock": stock, "Total_MRP_Shortage": total_mrp_shortage,
                 "Unit_Price": unit_price, "Shortage_Value": shortage_value,
+                "AW_Data": str(row.get(AW_COL, "")).strip(),
                 "חיפוש במאוזר": mouser_link, "חיפוש בדיגיקי": digikey_link, "חיפוש ב-Findchips": findchips_link
             })
 
@@ -1803,7 +1664,7 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None, plan_df_overr
     if target_yms is None:
         target_yms = selected_target_yms
     active_plan = plan_df_override if plan_df_override is not None else assembly_plan_df
-    
+     
     res = calculate_mrp_breakdown_cached(tuple(target_yms), tuple(sorted(sim_extra_stock.items())), active_plan)
     res_df = res.copy()
 
@@ -1814,34 +1675,13 @@ def calculate_mrp_breakdown(sim_extra_stock=None, target_yms=None, plan_df_overr
             res_df = res_df[res_df["Assembly"] == selected_assembly]
         if search_pn != "הכל":
             res_df = res_df[res_df["PN"] == search_pn]
+        if selected_aw != "הכל":
+            res_df = res_df[res_df["AW_Data"] == selected_aw]
 
     return res_df
 
 breakdown_df = calculate_mrp_breakdown(target_yms=selected_target_yms)
 
-# ==========================================================
-# תיקון קריטי: הקצאת רכיבים משותפת בין הרכבות (לא רק בדיקה עצמאית)
-# + מצטברת נכון על פני חודשים (לא "מתאפסת" בכל חודש בנפרד)
-# ==========================================================
-# עד עכשיו, בדיקת "ניתן לייצור" לכל הרכבה נעשתה בנפרד לגמרי - כלומר
-# אם רכיב X עם 72 יחידות במלאי נדרש גם להרכבה A וגם להרכבה B, שתי
-# הבדיקות (העצמאיות) ראו את אותם 72 יחידות שלמות, ושתיהן היו יכולות
-# להצהיר "ניתן לייצור" - למרות שבפועל יש מספיק רק לאחת מהן, לא לשתיהן
-# יחד. זו טעות אמיתית שזוהתה במפורש (למשל PN 1982257-5, מלאי=72,
-# נדרש גם ל-1096J800-001 וגם ל-6930N141-001).
-#
-# תיקון נוסף (בעקבות בדיקה חוזרת): הגרסה הקודמת של הפונקציה הזו איפסה
-# את מאגר הזמינות מחדש בתחילת כל חודש (`pool_cache = {}` בתוך הלולאה
-# על החודשים) - כלומר בדיקת "ניתן לייצור באוקטובר" לא ידעה שחלק
-# מהמלאי כבר "נאכל" על ידי תוכנית הייצור של ספטמבר. זו בדיוק אותה
-# מחלת "אי-הצטברות" שתיקנו כבר פעם אחת ברמת המלאי הידני - רק שכאן היא
-# הייתה קיימת ברמת ההקצאה בין החודשים עצמם.
-#
-# הפתרון: מעבדים את החודשים לפי סדר כרונולוגי, ושומרים "כמה כבר נצרך"
-# לכל רכיב על פני *כל* החודשים שכבר עובדו (consumed_so_far) - כך
-# שהזמינות לחודש N היא: (מלאי + כל אספקה עד חודש N, כולל ETA שכבר חל)
-# פחות כל מה שכבר נצרך בפועל בחודשים הקודמים באותו ריצה. כל הרכבה
-# בתוך אותו חודש עדיין מקבלת עדיפות לפי רמת BOM, בדיוק כמו קודם.
 def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_cache=None):
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
@@ -1850,7 +1690,7 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
     priority_order = sorted(assemblies, key=lambda a: (assembly_levels.get(a, 0), str(a)))
     chronological_yms = sorted(target_yms)
-    consumed_so_far = {}  # pn -> כמות שכבר נוכתה במצטבר, על פני כל החודשים שעובדו עד כה
+    consumed_so_far = {}
     result = {}
 
     for ym in chronological_yms:
@@ -1858,27 +1698,11 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
         def get_pool(pn):
             if pn not in pool_cache:
-                # תיקון קריטי: אם pn הוא בעצמו תת-הרכבה (מופיע בעץ ה-BOM),
-                # ה-STOCK שלו בקובץ הוא ערך "אינסופי" מלאכותי (9999999) -
-                # לא זמינות אמיתית. get_component_available_by_month לא
-                # יודע את זה (זה לא רכיב גלם), ולכן היה "מאמין" לערך
-                # האינסופי ומעולם לא מזהה תת-הרכבה כגורם חוסם - בדיוק
-                # כמו שזוהה בפועל (למשל 2201E370-001 מוצג "ניתן לייצור"
-                # למרות שתתי-ההרכבות שלו לא באמת זמינות). התיקון: לתת-
-                # הרכבה, הזמינות האמיתית היא מה שכבר ב-WIP + כמה עוד
-                # אפשר לבנות ממנה בפועל (רקורסיבית, אותה לוגיקה בדיוק
-                # כמו compute_max_buildable/check_hierarchical_ctb) - לא
-                # ה-STOCK הגולמי שלה.
                 if pn in ASSEMBLY_BOM_TREE:
                     sub_wip = wip_cache.get(pn, 0.0)
                     sub_max_new, _ = compute_max_buildable(pn, ym, inv_cache, wip_cache)
                     total_available_by_month = sub_wip + sub_max_new
                 else:
-                    # תיקון קריטי: get_component_available_by_month כבר מנכה
-                    # כאן באופן קבוע כל מלאי שנצרך בפועל ע"י WIP קיים (לכל
-                    # ההרכבות, לא רק זו שנבדקת כרגע) - ולכן אין לנכות WIP
-                    # שוב בהמשך על סמך "gross - wip" כמו שנעשה בעבר, כי זו
-                    # הייתה ניכוי כפול של אותה עובדה.
                     total_available_by_month = get_component_available_by_month(pn, ym, inv_cache, wip_cache)
                 pool_cache[pn] = max(0.0, total_available_by_month - consumed_so_far.get(pn, 0.0))
             return pool_cache[pn]
@@ -1893,17 +1717,12 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
             if raw_build <= 0 and current_wip_qty <= 0:
                 continue
 
-            # תיקון קריטי: היעד שנותר לבנייה הוא התוכנית פחות מה שכבר
-            # ב-WIP (כבר החל, כבר צרך חומרים) - ובודקים זמינות חומרים
-            # רק ביחס ליעד *הנותר* הזה, כי get_pool כבר מגלם בתוכו את
-            # ניכוי חומרי הגלם של ה-WIP הקיים.
             remaining_plan_target = max(0.0, raw_build - current_wip_qty)
             asm_shortages = month_breakdown[month_breakdown["Assembly"] == asm_col] if not month_breakdown.empty else pd.DataFrame()
 
             max_possible_new_build = remaining_plan_target
             limiting_components = []
 
-            # (א) מגבלות מרכיבי גלם - כפי שהיה
             if not asm_shortages.empty and remaining_plan_target > 0:
                 for _, s_row in asm_shortages.iterrows():
                     req_per = s_row["Qty_Per_Assembly"]
@@ -1917,16 +1736,6 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                         elif abs(possible - max_possible_new_build) < 1e-9:
                             limiting_components.append(comp_pn)
 
-            # (ב) תיקון קריטי: מגבלות תתי-הרכבות ישירות - זה היה חסר
-            # לגמרי! asm_shortages (א) מקורו ביתרת ה-MRP הנטו הבסיסית
-            # מהקובץ, ולתתי-הרכבות יש שם ערך "אינסופי" קבוע (STOCK
-            # sentinel 9999999) שלעולם לא יוצא שלילי - כלומר תת-הרכבה
-            # אף פעם לא "נתפסת" בבדיקה (א), גם אם היא בפועל לא זמינה
-            # בכלל (כפי שזוהה בפועל: 2201E370-001 הוצג "ניתן לייצור" 
-            # למרות שתתי-ההרכבות שלו לא היו זמינות). לכן בודקים כאן
-            # במפורש את כל תתי-ההרכבות הישירות (ASSEMBLY_CHILDREN), עם
-            # אותה לוגיקת זמינות רקורסיבית שכבר תוקנה ואומתה בטאב ה-WIP
-            # ובטאב הקיבולת המקסימלית (get_pool כולל את התיקון הזה).
             if remaining_plan_target > 0:
                 for child_pn in ASSEMBLY_CHILDREN.get(asm_col, []):
                     child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
@@ -1943,10 +1752,6 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
             net_executable_qty = max(0.0, min(remaining_plan_target, max_possible_new_build))
 
-            # ניכוי הצריכה החדשה בפועל (מעבר למה שכבר ב-WIP וכבר נוכה
-            # פעם אחת בתוך get_pool) - גם מהמאגר של החודש הנוכחי (כדי
-            # שהרכבות הבאות באותו חודש יראו זמינות מוקטנת), וגם מ-
-            # consumed_so_far (כדי שהחודשים הבאים בתור יראו אותה הפחתה).
             if net_executable_qty > 0:
                 if not asm_shortages.empty:
                     for _, s_row in asm_shortages.iterrows():
@@ -1956,9 +1761,6 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                             consumed_amount = req_per * net_executable_qty
                             pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
                             consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
-                # תיקון קריטי: ניכוי צריכה גם מתתי-ההרכבות הישירות
-                # שנוצלו (חלק ב' למעלה) - כדי שהרכבה אחרת שצריכה את
-                # אותה תת-הרכבה תראה זמינות מוקטנת בהתאם.
                 for child_pn in ASSEMBLY_CHILDREN.get(asm_col, []):
                     child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
                     qty_per_parent = child_info.get("qty_per_parent", 1.0)
@@ -1978,24 +1780,6 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
     return result
 
-# ==========================================================
-# תיקון קריטי: בדיקת זמינות היררכית אמיתית לפני הוספה ל-WIP
-# ==========================================================
-# הכפתור בטאב ה-WIP הבטיח "בדיקת זמינות היררכית מלאה", אבל בפועל לא
-# הייתה שום בדיקה - היה אפשר להוסיף ל-WIP כל כמות של כל הרכבה (כולל
-# ההרכבה הסופית, רמה 0) גם אם אין שום סיכוי לבנות אותה, כי תתי-ההרכבות
-# שלה חסרות ברכיבי גלם. הפונקציה הזו הולכת רקורסיבית על עץ ה-BOM
-# (ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN שנבנה מהקובץ) ובודקת בכל
-# רמה: (א) האם יש מספיק רכיבי גלם לכמות המבוקשת של ההרכבה הזו עד
-# (כולל) חודש היעד - כלומר מלאי נוכחי + כל אספקה שה-ETA שלה כבר חל,
-# בדיוק כמו במנגנון ה-MRP הרגיל (לא רק "יש כרגע בקופה") - ו-(ב) לכל
-# תת-הרכבה, האם ה-WIP הקיים שלה מכסה את הכמות הדרושה, ואם לא, ממשיכה
-# לבדוק את רכיבי הגלם שלה (רקורסיבית, עד לעלים).
-#
-# תיקון נוסף (בעקבות משוב): הגרסה הקודמת השוותה מול מלאי נוכחי בלבד
-# ("STOCK") והתעלמה לגמרי מ-ETA - זו הייתה טעות, כי בדיוק ככה עובד
-# ה-MRP: רכיב לא חייב להיות כבר במלאי, מספיק שה-ETA שלו חל עד (כולל)
-# חודש הבנייה המתוכנן.
 def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip_cache=None, _visited=None):
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
@@ -2009,7 +1793,6 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
 
     blockers = []
 
-    # (א) רכיבי גלם ישירים של ההרכבה הזו (עמודת ההרכבה ב-df הראשי)
     if asm_pn in df.columns:
         for _, row in df.iterrows():
             qty_per = safe_num(row[asm_pn])
@@ -2018,11 +1801,8 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
             comp_pn = str(row[PN_COL]).strip()
             base_stock_check = safe_num(row[STOCK_COL])
             if base_stock_check >= 9000000:
-                # ערך "מלאי אינסופי" - זהו כנראה מק"ט של הרכבה אחרת
-                # שמטופלת כבר דרך העץ הרקורסיבי, לא רכיב גלם אמיתי.
                 continue
             required = qty_per * requested_qty
-            # תיקון קריטי: כולל ניכוי מלאי שכבר "נתפס" ע"י WIP קיים
             available = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
             if available < required:
                 blockers.append({
@@ -2034,7 +1814,6 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
                     "shortage": required - available
                 })
 
-    # (ב) תתי-הרכבות (רקורסיה) - מנוכה מהן ה-WIP הקיים
     for child_pn in ASSEMBLY_CHILDREN.get(asm_pn, []):
         child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
         qty_per_parent = child_info.get("qty_per_parent", 1.0)
@@ -2046,29 +1825,7 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
 
     return blockers
 
-# ==========================================================
-# קיבולת ייצור מקסימלית תיאורטית לכל הרכבה (לא קשור לתוכנית)
-# ==========================================================
-# זו לוגיקה נפרדת - היא לא נוגעת ולא משנה שום דבר בלוגיקה הקיימת
-# (calculate_mrp_breakdown, compute_shared_executable_plan,
-# check_hierarchical_ctb נשארים בדיוק כפי שהם). היא רק *משתמשת* באותם
-# אבני-בניין שכבר קיימים ומאומתים (get_component_available_by_month,
-# ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN) כדי לענות על שאלה שונה: "כמה
-# יחידות של הרכבה X היה אפשר לייצר תיאורטית עד חודש Y, בלי קשר לתוכנית
-# הייצור המתוכננת בפועל" - כלומר קיבולת מקסימלית, לא "ניתן לייצור
-# מתוך התוכנית". החישוב הוא לכל הרכבה בנפרד (לא הקצאה משותפת בין
-# הרכבות מתחרות - ראו הסבר בטאב עצמו).
-#
-# סודר לשלוש פונקציות ברורות במקום פונקציה רקורסיבית אחת ארוכה, כדי
-# שיהיה ברור מה כל שלב עושה. האלגוריתם והתוצאה זהים לחלוטין לגרסה
-# הקודמת - זה ארגון מחדש של אותה לוגיקה, לא שינוי שלה.
-
 def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cache):
-    """
-    שלב 1: כמה יחידות של asm_pn ניתן לבנות בהתבסס רק על רכיבי הגלם
-    הישירים שלו (עמודת ההרכבה ב-df הראשי) - לא כולל תתי-הרכבות.
-    מחזיר (מקסימום יחידות, הרכיב שהכי מגביל) - inf אם אין רכיבי גלם בכלל.
-    """
     max_qty = float('inf')
     limiting_component = None
 
@@ -2082,7 +1839,7 @@ def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cach
         comp_pn = str(row[PN_COL]).strip()
         base_stock_check = safe_num(row[STOCK_COL])
         if base_stock_check >= 9000000:
-            continue  # מק"ט של הרכבה אחרת - מטופל בשלב 2 (תתי-הרכבות), לא רכיב גלם אמיתי
+            continue
         avail = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
         possible = avail / qty_per
         if possible < max_qty:
@@ -2092,13 +1849,6 @@ def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cach
     return max_qty, limiting_component
 
 def _max_buildable_from_subassemblies(asm_pn, target_ym, inv_cache, wip_cache, visited):
-    """
-    שלב 2: כמה יחידות של asm_pn ניתן לבנות בהתבסס על תתי-ההרכבות שלו
-    (רקורסיבי, עד לעלי העץ) - "מה שכבר ב-WIP" של כל תת-הרכבה נספר
-    כזמין מיידית, ומעליו מתווספת הקיבולת הנוספת שתת-ההרכבה עצמה יכולה
-    לספק. מחזיר (מקסימום יחידות, תת-ההרכבה הכי מגבילה) - inf אם אין
-    תתי-הרכבות בכלל.
-    """
     max_qty = float('inf')
     limiting_component = None
 
@@ -2120,12 +1870,6 @@ def _max_buildable_from_subassemblies(asm_pn, target_ym, inv_cache, wip_cache, v
     return max_qty, limiting_component
 
 def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _visited=None):
-    """
-    קיבולת ייצור מקסימלית תיאורטית של asm_pn עד (כולל, לא כולל)
-    target_ym - המינימום בין: (1) מה שרכיבי הגלם הישירים מאפשרים,
-    ו-(2) מה שתתי-ההרכבות מאפשרות (רקורסיבית). מחזיר (מקסימום יחידות,
-    שם הרכיב/תת-ההרכבה המגביל).
-    """
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
     if wip_cache is None:
@@ -2133,7 +1877,7 @@ def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _vi
     if _visited is None:
         _visited = set()
     if asm_pn in _visited:
-        return float('inf'), None  # מגן מפני לולאה מעגלית בעץ ה-BOM (לא אמור לקרות)
+        return float('inf'), None
     _visited = _visited | {asm_pn}
 
     direct_qty, direct_limiter = _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cache)
@@ -2148,13 +1892,6 @@ def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _vi
         max_qty = 0.0
     return max(0.0, max_qty), limiting_component
 
-# ==========================================================
-# שיפור ויזואלי: פס תקציר מנהלים קבוע, מעל שורת הטאבים
-# ==========================================================
-# חשוב: זה לא נוגע בשום חישוב MRP קיים - רק מציג בצורה בולטת ונגישה
-# נתונים שכבר חושבו למעלה (breakdown_df, WIP), כדי שמנהל יראה את
-# התמונה הראשית מיד עם הכניסה לאפליקציה, בלי לגלול או ללחוץ לתוך
-# אף אחד מ-12 הטאבים.
 _exec_wip_cache = fetch_wip_records()
 _exec_unique_shortage_items = breakdown_df["PN"].nunique() if not breakdown_df.empty else 0
 _exec_blocked_assemblies = breakdown_df[breakdown_df["Assembly"] != "ללא שיוך"]["Assembly"].nunique() if not breakdown_df.empty else 0
@@ -2186,16 +1923,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ==========================================================
-# ניווט: תפריטים נפתחים (popover) במקום שורת טאבים עם גלילה
-# ==========================================================
-# תיקון ניווט בלבד (לא לוגיקה!): 3 כפתורי קטגוריה בשורה אחת קבועה
-# למעלה - לחיצה על כל אחד פותחת חלונית קופצת (popover) עם רשימת
-# הטאבים שבקטגוריה. אין יותר גלילה אופקית (כמו בשורת טאבים), ואין
-# יותר רשימה אנכית ארוכה שתופסת מקום קבוע (כמו בסיידבר הקודם) - כל
-# הטאבים נגישים מתוך שורה אחת קומפקטית, וה"תפריט" נעלם אוטומטית אחרי
-# שבוחרים. כל "with tabN:" נשאר בדיוק "if/elif nav_page == '...':"
-# עם אותה הזחה בדיוק - שום תוכן בתוך הטאבים עצמם לא השתנה.
 NAV_GROUPS = {
     "📊 ניתוח ומעקב": [
         "📈 Executive Dashboard",
@@ -2227,9 +1954,7 @@ _has_popover = hasattr(st, "popover")
 for (_group_label, _group_items), _col in zip(NAV_GROUPS.items(), nav_cols):
     with _col:
         _current_group = PAGE_TO_GROUP.get(st.session_state["main_nav_page"])
-        _trigger_label = f"{_group_label}  ▾" + (f"   |   {st.session_state['main_nav_page']}" if _current_group == _group_label else "")
-        # תאימות לאחור: אם גרסת Streamlit ישנה מדי ואין st.popover,
-        # נופלים בחזרה ל-expander (עדיין בשורה הראשית, לא בסיידבר).
+        _trigger_label = f"{_group_label}  ▾" + (f"    |    {st.session_state['main_nav_page']}" if _current_group == _group_label else "")
         _nav_container = st.popover(_trigger_label, use_container_width=True) if _has_popover else st.expander(_trigger_label, expanded=False)
         with _nav_container:
             for _item in _group_items:
@@ -2264,10 +1989,6 @@ if nav_page == "📈 Executive Dashboard":
     blocked_assemblies = len(dash_df['Assembly'].unique()) if not dash_df.empty else 0
 
     assemblies_to_evaluate = [a for a in valid_assemblies if selected_assembly == "הכל" or a == selected_assembly]
-
-    # תיקון קריטי: מחשבים את התוכנית המשותפת על *כל* ההרכבות (לא רק
-    # אלה שנבחרו בסינון), כדי שהקצאת המלאי המשותף תשקף גם צריכה של
-    # הרכבות שלא נבחרות כרגע לתצוגה - ורק אז מסננים לתצוגה.
     shared_plan = compute_shared_executable_plan(selected_target_yms, valid_assemblies, inv_cache_dash, wip_cache_dash)
 
     for asm_col in assemblies_to_evaluate:
@@ -2329,11 +2050,6 @@ if nav_page == "📈 Executive Dashboard":
 
         with col_g1:
             st.markdown("##### 🥧 התפלגות חוסרים לפי סוג פריט")
-            # תיקון: dash_df מכיל שורה אחת לכל צירוף (PN, הרכבה) - כלומר
-            # מק"ט שמשמש כמה הרכבות מופיע כמה פעמים עם אותו ערך חוסר.
-            # סיכום ישיר לפי סוג פריט/ספק היה מכפיל בטעות את החוסר שלו.
-            # לכן מדללים קודם לפי PN ייחודי (Total_MRP_Shortage הוא ערך
-            # ברמת הפריט, זהה בכל השורות הכפולות שלו).
             dash_df_unique_pn = dash_df.drop_duplicates(subset=["PN"])
             fig_pie = px.pie(dash_df_unique_pn, names="Item_Type", values="Total_MRP_Shortage", hole=0.5, color_discrete_sequence=COLOR_SEQ)
             fig_pie.update_layout(template=PLOTLY_TEMPLATE, height=280, margin=dict(t=10, b=10, l=10, r=10))
@@ -2341,11 +2057,6 @@ if nav_page == "📈 Executive Dashboard":
 
         with col_g2:
             st.markdown("##### 💰 TOP 10 חוסרים לפי ערך כספי ($ , מחיר יחידה × כמות חסרה)")
-            # שיפור: עכשיו כשהספקים מעודכנים, הגרף מדרג את 10 הפריטים
-            # החסרים עם הערך הכספי הגבוה ביותר (Total_MRP_Shortage *
-            # מחיר יחידה מעמודה AY) - נותן תמונה עסקית ("איפה הכסף
-            # באמת נתקע"), לא רק כמות יחידות גולמית. מוצג כגרף משפך
-            # (funnel) מדורג, עם שם הספק וה-PN בכל שלב.
             top10_value_df = dash_df_unique_pn[dash_df_unique_pn["Shortage_Value"] > 0].sort_values("Shortage_Value", ascending=False).head(10)
             if not top10_value_df.empty:
                 top10_value_df = top10_value_df.assign(
@@ -2366,8 +2077,6 @@ if nav_page == "📈 Executive Dashboard":
                 st.info("אין נתוני מחיר זמינים לחישוב ערך כספי של החוסרים בטווח הנוכחי.")
 
         st.markdown("##### 🏭 התפלגות חוסרים לפי ספק")
-        # דילול PN ייחודי (Total_MRP_Shortage הוא ערך ברמת הפריט, זהה
-        # בכל השורות הכפולות שלו לפי הרכבה) + גרף עמודות ממוין.
         supplier_agg = dash_df_unique_pn.groupby("Supplier", as_index=False).agg(
             Total_Shortage=("Total_MRP_Shortage", "sum"),
             Total_Value=("Shortage_Value", "sum"),
@@ -2385,14 +2094,14 @@ if nav_page == "📈 Executive Dashboard":
         display_df = dash_df[[
             "PN", "Description", "Item_Type", "Supplier", "Status", "Assembly", "Assembly_Desc",
             "Qty_Per_Assembly", "Assembly_Monthly_Build", "Required_Demand", "Stock", "Total_MRP_Shortage",
-            "Unit_Price", "Shortage_Value",
+            "Unit_Price", "Shortage_Value", "AW_Data",
             "חיפוש במאוזר", "חיפוש בדיגיקי", "חיפוש ב-Findchips"
         ]].rename(columns={
             "PN": "מק'ט", "Description": "תיאור פריט", "Item_Type": "סוג פריט", "Supplier": "ספק",
             "Status": "סטטוס טיפול", "Assembly": "קוד הרכבה", "Assembly_Desc": "תיאור הרכבה",
             "Qty_Per_Assembly": "כמות נדרשת", "Assembly_Monthly_Build": "ת. ייצור",
             "Required_Demand": "ביקוש מדויק", "Stock": "מלאי", "Total_MRP_Shortage": "סך חוסר",
-            "Unit_Price": "מחיר יחידה ($)", "Shortage_Value": "ערך חוסר ($)"
+            "Unit_Price": "מחיר יחידה ($)", "Shortage_Value": "ערך חוסר ($)", "AW_Data": "עמודה AW"
         })
 
         def _shortage_color(val, vmax):
@@ -2402,8 +2111,6 @@ if nav_page == "📈 Executive Dashboard":
             return f"background-color: rgba(239,{int(180 - ratio * 140)},{int(120 - ratio * 100)},0.55); color: white;"
 
         def _value_color(val, vmax):
-            # שיפור ויזואלי: גם עמודת הערך הכספי מקבלת גרדיאנט (כחול-סגול)
-            # כדי שמנהל יראה מיד "איפה הכסף" בלי לקרוא מספרים
             if vmax <= 0:
                 return ""
             ratio = min(1.0, float(val) / vmax)
@@ -2414,8 +2121,8 @@ if nav_page == "📈 Executive Dashboard":
         max_value = sorted_display_df["ערך חוסר ($)"].max() if not sorted_display_df.empty else 0
 
         styled = sorted_display_df.style.map(lambda v: _shortage_color(v, max_shortage), subset=["סך חוסר"]) \
-                                         .map(lambda v: _value_color(v, max_value), subset=["ערך חוסר ($)"]) \
-                                         .format({"ערך חוסר ($)": "${:,.0f}", "מחיר יחידה ($)": "${:,.2f}"})
+                                       .map(lambda v: _value_color(v, max_value), subset=["ערך חוסר ($)"]) \
+                                       .format({"ערך חוסר ($)": "${:,.0f}", "מחיר יחידה ($)": "${:,.2f}"})
         st.dataframe(styled, column_config={
             "חיפוש במאוזר": st.column_config.LinkColumn("🔗 מאוזר", display_text="פתח במאוזר"),
             "חיפוש בדיגיקי": st.column_config.LinkColumn("🔗 דיגיקי", display_text="פתח בדיגיקי"),
@@ -2436,8 +2143,6 @@ elif nav_page == "📊 תוכנית ייצור (Smart CTB)":
     matrix_rows, chart_assembly_data = [], []
     assemblies_to_check = [asm for asm in valid_assemblies if selected_assembly == "הכל" or asm == selected_assembly]
 
-    # תיקון קריטי: מחשבים על *כל* ההרכבות (לא רק המסוננות) כדי שהקצאת
-    # המלאי המשותפת בין הרכבות תהיה נכונה, ורק אז מסננים לתצוגה.
     shared_plan_ctb = compute_shared_executable_plan(selected_target_yms, valid_assemblies, inv_cache_ctb, wip_cache_ctb)
 
     for asm_col in assemblies_to_check:
@@ -2469,16 +2174,9 @@ elif nav_page == "📊 תוכנית ייצור (Smart CTB)":
             gross_executable = info["gross_executable"] if info else 0.0
             current_wip_this_m = info["wip"] if info else 0.0
             limiting_pns = info["limiting_components"] if info else []
-            # תיקון: היעד שנותר לבנייה החודש הוא התוכנית פחות מה שכבר
-            # ב-WIP (בדיוק אותה לוגיקה כמו בחישוב עצמו) - זה הבסיס הנכון
-            # להשוואה, לא raw_build הגולמי.
             remaining_target = max(0.0, raw_build - current_wip_this_m)
 
             if limiting_pns and gross_executable < remaining_target - 1e-9:
-                # תיקון קריטי: הרכיבים החוסמים מגיעים עכשיו מהקצאת המלאי
-                # המשותפת (compute_shared_executable_plan) - כך שאם שתי
-                # הרכבות שולפות מאותו רכיב מוגבל, זה בא לידי ביטוי כאן
-                # ולא רק "שתיהן ניתנות לייצור במלואן" בטעות.
                 formatted_missing = []
                 for c_pn in limiting_pns:
                     c_match = df[df[PN_COL].astype(str).str.strip() == c_pn]
@@ -2488,13 +2186,9 @@ elif nav_page == "📊 תוכנית ייצור (Smart CTB)":
                     formatted_missing.append(f"{c_pn} ({c_desc[:10]}) - חוסם ל-{shortage_amt:g} יח' [ETA: {raw_eta}]")
                 row_data[f"סטטוס וחוסרים ({target_m})"] = "❌ חסר (כולל התחשבות במלאי משותף עם הרכבות אחרות): " + " | ".join(formatted_missing)
             elif raw_build <= 0 and current_wip_this_m <= 0:
-                # תיקון: הבחנה ברורה - אין בכלל תוכנית ייצור לחודש הזה
                 row_data[f"סטטוס וחוסרים ({target_m})"] = "💤 ללא תוכנית ייצור"
             elif remaining_target <= 1e-9 and current_wip_this_m > 0:
-                # תיקון: מקרה שהיה מתבלבל עם "ללא תוכנית ייצור" - יש
-                # תוכנית, אבל היא כולה כבר ב-WIP, אז אין יחידות *נוספות*
-                # לייצר החודש (זה שונה מ"אין תוכנית בכלל").
-                row_data[f"סטטוס וחוסרים ({target_m})"] = f"🔵 כל התוכנית ({raw_build:g} יח') כבר ב-WIP - אין יחידות נוספות לייצר החודש"
+                row_data[f"סטטוס וחוסרים ({target_m})"] = f"🔵 כל התוכנית ({raw_build:g} יח') כבר ב-WIP - אין יחידות נוספות לייצור החודש"
             else:
                 row_data[f"סטטוס וחוסרים ({target_m})"] = "✅ מוכן לייצור מלא (כולל כל היחידות הנוספות שנותרו מעבר ל-WIP)"
 
@@ -2557,10 +2251,6 @@ elif nav_page == "🏭 ניהול WIP (בייצור)":
                     delete_wip_record(wip_to_close)
                     st.rerun()
 
-        # שיפור: אפשרות למחוק הרכבה מה-WIP בלי לסגור אותה למלאי - למקרה
-        # של טעות בהזנה, ביטול ייצור מתוכנן, או תיקון כמות. בשונה מ"סגור
-        # WIP" (שמעביר את הכמות למלאי הזמין), מחיקה כאן פשוט מבטלת את
-        # רשומת ה-WIP לגמרי, בלי שום תוספת למלאי.
         st.divider()
         st.markdown("##### 🗑️ מחיקת הרכבה מה-WIP (ללא העברה למלאי - לביטול/תיקון טעות)")
         col_del1, col_del2 = st.columns([3, 1])
@@ -2596,11 +2286,6 @@ elif nav_page == "🏭 ניהול WIP (בייצור)":
     )
     wip_target_ym = pd.to_datetime(month_options[wip_target_month_label]).strftime("%Y-%m")
 
-    # תיקון קריטי: כאן בפועל רצה עכשיו בדיקת הזמינות ההיררכית שהכפתור
-    # תמיד הבטיח ולא ביצע. הבדיקה מתחשבת ב-ETA (מלאי נוכחי + כל אספקה
-    # שה-ETA שלה חל עד חודש הבנייה שנבחר, בדיוק כמו מנגנון ה-MRP הרגיל)
-    # ולא רק במה שכבר פיזית בקופה. הבדיקה רצה בכל שינוי (מחוץ לטופס) כדי
-    # שהמשתמש יראה מיד את התוצאה, והאישור הסופי נשאר בתוך טופס לשמירה אטומית.
     hierarchy_blockers = check_hierarchical_ctb(wip_asm_choice, wip_qty_input, wip_target_ym) if wip_qty_input > 0 else []
 
     if hierarchy_blockers:
@@ -2666,7 +2351,7 @@ elif nav_page == "📅 מעקב ETA ודחיות":
 
         orig_eta = get_base_mrp_eta(p_num)
         orig_qty = get_base_mrp_qty(p_num)
-        
+         
         saved_rec = inv_cache_all.get(p_num, {})
         current_eta_raw = saved_rec.get("eta", "")
         current_added_stock = saved_rec.get("added_stock", 0.0)
@@ -2688,9 +2373,6 @@ elif nav_page == "📅 מעקב ETA ודחיות":
 
     eta_df = pd.DataFrame(eta_table_rows)
     if not eta_df.empty:
-        # שיפור שקיפות: מציג בבירור כמה פריטים עדיין ללא ETA בסיסי מה-MRP
-        # (מק"טים שהפונקציה לא הצליחה לשייך להם אספקה/יתרה עתידית -
-        # ראו "בדיקה נדרשת"), כדי שהצוות ידע לתעדף בדיקה ידנית שלהם.
         needs_review_count = int((eta_df["ETA מקורי (MRP)"] == "בדיקה נדרשת").sum())
         st.metric("🔎 מק\"טים ללא ETA בסיסי במערכת (דורשים בדיקה ידנית)", needs_review_count)
 
@@ -2745,7 +2427,7 @@ elif nav_page == "🎯 ניתוח רגישות ותוכנית":
 
     st.divider()
     st.markdown("##### ⚙️ הגדרת שינוי רגישות: גורף או חודש ספציפי")
-    
+     
     col_mode_choice = st.columns(2)
     with col_mode_choice[0]:
         sens_scope = st.radio("היקף השינוי", ["שינוי גורף לכל החודשים", "שינוי לחודש ספציפי בלבד"], horizontal=True, key="sens_scope")
@@ -2768,7 +2450,7 @@ elif nav_page == "🎯 ניתוח רגישות ותוכנית":
     if st.button("🚀 הרץ ניתוח רגישות לתוכנית", key="run_sensitivity"):
         simulated_plan_df = assembly_plan_df.copy()
         sys_factor_map = ASSEMBLY_SYSTEM_FACTORS
-        
+         
         if sens_scope == "שינוי גורף לכל החודשים":
             if sens_mode == "אחוזים (%)" and sensitivity_val != 0:
                 multiplier = 1.0 + (sensitivity_val / 100.0)
@@ -2863,21 +2545,9 @@ elif nav_page == "🎯 ניתוח רגישות ותוכנית":
         st.dataframe(comparison_diff, use_container_width=True)
 
 elif nav_page == "✏️ עריכת ETA מרוכזת":
-    # ==========================================================
-    # טאב חדש: עריכת ETA מרוכזת לכל הפריטים
-    # ==========================================================
-    # טבלה אחת עם כל הפריטים, שאפשר לערוך בה ישירות ETA / תוספת מלאי /
-    # סטטוס / ספק / הערות, ולשמור הכל ל-DB (Supabase) בלחיצה אחת.
-    # חשוב: זו בדיוק אותה טבלה (mrp_inventory_updates) שממנה כל שאר
-    # המערכת קוראת - חישובי ה-MRP, ה-CTB, ובדיקת הזמינות ההיררכית ב-WIP
-    # (get_inventory_record) - כך שכל שינוי שנשמר כאן מוזן אוטומטית לכל
-    # החישובים בכל שאר הטאבים, בלי צורך בשום שינוי נוסף.
     st.markdown('<div class="section-title">✏️ עריכת ETA מרוכזת לכל הפריטים</div>', unsafe_allow_html=True)
     st.caption("עדכון כאן נשמר ישירות ב-DB, ומשפיע מיידית על כל חישובי ה-MRP, ה-CTB ובדיקת הזמינות ההיררכית ב-WIP בכל שאר הטאבים.")
 
-    # ==========================================================
-    # ייבוא מרוכז של רשימת ספקים לכל ה-BOM (לפי הרשימה שסופקה)
-    # ==========================================================
     with st.expander(f"📥 ייבוא מרוכז של רשימת ספקים ({len(DEFAULT_SUPPLIER_MAP)} פריטים) - עדכון חד-פעמי ל-DB", expanded=False):
         st.caption("לחיצה על הכפתור תעדכן את שדה ה'ספק' ב-DB עבור כל הפריטים ברשימה, בלי לגעת בשדות אחרים (תוספת מלאי, ETA, סטטוס, הערות) שכבר קיימים לאותם פריטים.")
         inv_cache_supplier_preview = fetch_all_inventory_records()
@@ -3003,40 +2673,13 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
                 st.info("לא זוהו שינויים לשמירה.")
 
 elif nav_page == "🏆 קיבולת ייצור מקסימלית":
-    # ==========================================================
-    # קיבולת ייצור מקסימלית תיאורטית לכל הרכבה
-    # ==========================================================
-    # שימו לב: זו שאלה שונה מ"ניתן לייצור" בטאב 2 (Smart CTB). טאב 2
-    # עונה על "כמה מתוך התוכנית *המתוכננת* אפשר לבנות החודש" (מוגבל
-    # ע"י raw_build ומחולק בין הרכבות מתחרות לפי סדר עדיפות). הטאב הזה
-    # עונה על שאלה עצמאית: "כמה יחידות של הרכבה X היה אפשר לייצר בכלל
-    # עד חודש Y, בלי קשר לתוכנית" - קיבולת מקסימלית תיאורטית.
-    #
-    # חשוב: זה מחושב לכל הרכבה *בנפרד* (לא הקצאת מלאי משותפת בין
-    # הרכבות מתחרות, כמו ב-compute_shared_executable_plan) - כי "קיבולת
-    # מקסימלית" לכל הרכבות יחד היא שאלה שאין לה תשובה יחידה כשכמה
-    # הרכבות מתחרות על אותם רכיבים (זה תלוי בסדר עדיפות שרירותי). לכן
-    # המספר כאן מייצג: "אם היינו מרכזים את כל המלאי הזמין רק בהרכבה
-    # הזו בלבד, כמה אפשר היה לבנות" - תקרת קיבולת עליונה לכל הרכבה,
-    # לא תחזית מציאותית אם כמה הרכבות ייבנו יחד באותו חודש.
-    #
-    # הלוגיקה עצמה (get_component_available_by_month, ASSEMBLY_BOM_TREE)
-    # זהה לחלוטין למה שכבר תוקן ואומת בטאבים אחרים - כולל ETA (זמין רק
-    # מחודש לפני), ניכוי מלאי שכבר נצרך ב-WIP, והיררכיית BOM רקורסיבית.
-    #
-    # תיקון (סינטקס): הגרסה הקודמת השתמשה ב-f-string עם גרש בתוך שם
-    # עמודה (יח') בתוך ה-{} של ה-f-string, וכדי "לברוח" ממנו הוסיפה
-    # backslash. זה תקין ב-Python 3.12+ בלבד (PEP 701) - בגרסאות
-    # Python נפוצות יותר על Streamlit Cloud (3.9-3.11) זו שגיאת
-    # SyntaxError. עכשיו הערכים נשלפים למשתנים רגילים לפני העיצוב,
-    # בלי backslash בתוך שום f-string - תואם לכל גרסת Python.
     st.markdown('<div class="section-title">🏆 קיבולת ייצור מקסימלית לכל הרכבה</div>', unsafe_allow_html=True)
     st.caption(
         "כמה יחידות מכל הרכבה ניתן היה לייצר תיאורטית עד חודש נתון, בהתבסס על מלאי + אספקה עם ETA שכבר חל + ניכוי מה שכבר נצרך ב-WIP - "
         "ללא קשר לתוכנית הייצור המתוכננת. חישוב זה מבוצע לכל הרכבה בנפרד (תקרת קיבולת עליונה), ולא מחלק מלאי משותף בין הרכבות כמו בטאב 'תוכנית ייצור'."
     )
 
-    CAP_COL = "קיבולת מקסימלית (יחידות)"  # שם עמודה בלי גרש - נמנע מכל בעיית ציטוט עתידית
+    CAP_COL = "קיבולת מקסימלית (יחידות)"
 
     cap_target_month_label = st.selectbox(
         "עד איזה חודש לבדוק זמינות (כולל אספקה עם ETA עד לפני חודש זה)",
