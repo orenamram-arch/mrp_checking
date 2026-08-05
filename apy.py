@@ -721,13 +721,6 @@ st.set_page_config(
 # ==========================================================
 # AUTHENTICATION GATE (שכבת הגנה למערכת)
 # ==========================================================
-# תומך במספר משתמשים/סיסמאות שונים - כל צמד username/password מוגדר
-# ב-st.secrets["passwords"] (לא בקוד עצמו, כדי שלא יהיה חשוף בגיטהאב
-# ציבורי). כדי להוסיף משתמש חדש, מוסיפים שורה תחת [passwords] בקובץ
-# secrets.toml (או בהגדרות Secrets ב-Streamlit Cloud):
-#   [passwords]
-#   oren = "הסיסמה-שלך-כאן"
-#   yossi = "סיסמה-אחרת"
 def check_password():
     def password_entered():
         if st.secrets["passwords"].get(st.session_state["username"]) == st.session_state["password"]:
@@ -1834,12 +1827,28 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
         def get_pool(pn):
             if pn not in pool_cache:
-                # תיקון קריטי: get_component_available_by_month כבר מנכה
-                # כאן באופן קבוע כל מלאי שנצרך בפועל ע"י WIP קיים (לכל
-                # ההרכבות, לא רק זו שנבדקת כרגע) - ולכן אין לנכות WIP
-                # שוב בהמשך על סמך "gross - wip" כמו שנעשה בעבר, כי זו
-                # הייתה ניכוי כפול של אותה עובדה.
-                total_available_by_month = get_component_available_by_month(pn, ym, inv_cache, wip_cache)
+                # תיקון קריטי: אם pn הוא בעצמו תת-הרכבה (מופיע בעץ ה-BOM),
+                # ה-STOCK שלו בקובץ הוא ערך "אינסופי" מלאכותי (9999999) -
+                # לא זמינות אמיתית. get_component_available_by_month לא
+                # יודע את זה (זה לא רכיב גלם), ולכן היה "מאמין" לערך
+                # האינסופי ומעולם לא מזהה תת-הרכבה כגורם חוסם - בדיוק
+                # כמו שזוהה בפועל (למשל 2201E370-001 מוצג "ניתן לייצור"
+                # למרות שתתי-ההרכבות שלו לא באמת זמינות). התיקון: לתת-
+                # הרכבה, הזמינות האמיתית היא מה שכבר ב-WIP + כמה עוד
+                # אפשר לבנות ממנה בפועל (רקורסיבית, אותה לוגיקה בדיוק
+                # כמו compute_max_buildable/check_hierarchical_ctb) - לא
+                # ה-STOCK הגולמי שלה.
+                if pn in ASSEMBLY_BOM_TREE:
+                    sub_wip = wip_cache.get(pn, 0.0)
+                    sub_max_new, _ = compute_max_buildable(pn, ym, inv_cache, wip_cache)
+                    total_available_by_month = sub_wip + sub_max_new
+                else:
+                    # תיקון קריטי: get_component_available_by_month כבר מנכה
+                    # כאן באופן קבוע כל מלאי שנצרך בפועל ע"י WIP קיים (לכל
+                    # ההרכבות, לא רק זו שנבדקת כרגע) - ולכן אין לנכות WIP
+                    # שוב בהמשך על סמך "gross - wip" כמו שנעשה בעבר, כי זו
+                    # הייתה ניכוי כפול של אותה עובדה.
+                    total_available_by_month = get_component_available_by_month(pn, ym, inv_cache, wip_cache)
                 pool_cache[pn] = max(0.0, total_available_by_month - consumed_so_far.get(pn, 0.0))
             return pool_cache[pn]
 
@@ -1862,6 +1871,8 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
 
             max_possible_new_build = remaining_plan_target
             limiting_components = []
+
+            # (א) מגבלות מרכיבי גלם - כפי שהיה
             if not asm_shortages.empty and remaining_plan_target > 0:
                 for _, s_row in asm_shortages.iterrows():
                     req_per = s_row["Qty_Per_Assembly"]
@@ -1874,22 +1885,57 @@ def compute_shared_executable_plan(target_yms, assemblies, inv_cache=None, wip_c
                             limiting_components = [comp_pn]
                         elif abs(possible - max_possible_new_build) < 1e-9:
                             limiting_components.append(comp_pn)
-                net_executable_qty = max(0.0, min(remaining_plan_target, max_possible_new_build))
-            else:
-                net_executable_qty = remaining_plan_target
+
+            # (ב) תיקון קריטי: מגבלות תתי-הרכבות ישירות - זה היה חסר
+            # לגמרי! asm_shortages (א) מקורו ביתרת ה-MRP הנטו הבסיסית
+            # מהקובץ, ולתתי-הרכבות יש שם ערך "אינסופי" קבוע (STOCK
+            # sentinel 9999999) שלעולם לא יוצא שלילי - כלומר תת-הרכבה
+            # אף פעם לא "נתפסת" בבדיקה (א), גם אם היא בפועל לא זמינה
+            # בכלל (כפי שזוהה בפועל: 2201E370-001 הוצג "ניתן לייצור" 
+            # למרות שתתי-ההרכבות שלו לא היו זמינות). לכן בודקים כאן
+            # במפורש את כל תתי-ההרכבות הישירות (ASSEMBLY_CHILDREN), עם
+            # אותה לוגיקת זמינות רקורסיבית שכבר תוקנה ואומתה בטאב ה-WIP
+            # ובטאב הקיבולת המקסימלית (get_pool כולל את התיקון הזה).
+            if remaining_plan_target > 0:
+                for child_pn in ASSEMBLY_CHILDREN.get(asm_col, []):
+                    child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
+                    qty_per_parent = child_info.get("qty_per_parent", 1.0)
+                    if qty_per_parent <= 0:
+                        continue
+                    avail = get_pool(child_pn)
+                    possible = avail / qty_per_parent
+                    if possible < max_possible_new_build - 1e-9:
+                        max_possible_new_build = possible
+                        limiting_components = [child_pn]
+                    elif abs(possible - max_possible_new_build) < 1e-9:
+                        limiting_components.append(child_pn)
+
+            net_executable_qty = max(0.0, min(remaining_plan_target, max_possible_new_build))
 
             # ניכוי הצריכה החדשה בפועל (מעבר למה שכבר ב-WIP וכבר נוכה
             # פעם אחת בתוך get_pool) - גם מהמאגר של החודש הנוכחי (כדי
             # שהרכבות הבאות באותו חודש יראו זמינות מוקטנת), וגם מ-
             # consumed_so_far (כדי שהחודשים הבאים בתור יראו אותה הפחתה).
-            if not asm_shortages.empty and net_executable_qty > 0:
-                for _, s_row in asm_shortages.iterrows():
-                    req_per = s_row["Qty_Per_Assembly"]
-                    if req_per > 0:
-                        comp_pn = str(s_row["PN"]).strip()
-                        consumed_amount = req_per * net_executable_qty
-                        pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
-                        consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
+            if net_executable_qty > 0:
+                if not asm_shortages.empty:
+                    for _, s_row in asm_shortages.iterrows():
+                        req_per = s_row["Qty_Per_Assembly"]
+                        if req_per > 0:
+                            comp_pn = str(s_row["PN"]).strip()
+                            consumed_amount = req_per * net_executable_qty
+                            pool_cache[comp_pn] = max(0.0, get_pool(comp_pn) - consumed_amount)
+                            consumed_so_far[comp_pn] = consumed_so_far.get(comp_pn, 0.0) + consumed_amount
+                # תיקון קריטי: ניכוי צריכה גם מתתי-ההרכבות הישירות
+                # שנוצלו (חלק ב' למעלה) - כדי שהרכבה אחרת שצריכה את
+                # אותה תת-הרכבה תראה זמינות מוקטנת בהתאם.
+                for child_pn in ASSEMBLY_CHILDREN.get(asm_col, []):
+                    child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
+                    qty_per_parent = child_info.get("qty_per_parent", 1.0)
+                    if qty_per_parent <= 0:
+                        continue
+                    consumed_amount = qty_per_parent * net_executable_qty
+                    pool_cache[child_pn] = max(0.0, get_pool(child_pn) - consumed_amount)
+                    consumed_so_far[child_pn] = consumed_so_far.get(child_pn, 0.0) + consumed_amount
 
             result[(asm_col, ym)] = {
                 "raw_build": raw_build,
@@ -1970,10 +2016,10 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
     return blockers
 
 # ==========================================================
-# שיפור: קיבולת ייצור מקסימלית תיאורטית לכל הרכבה (לא קשור לתוכנית)
+# קיבולת ייצור מקסימלית תיאורטית לכל הרכבה (לא קשור לתוכנית)
 # ==========================================================
-# זו פונקציה חדשה ונפרדת - היא לא נוגעת ולא משנה שום דבר בלוגיקה
-# הקיימת (calculate_mrp_breakdown, compute_shared_executable_plan,
+# זו לוגיקה נפרדת - היא לא נוגעת ולא משנה שום דבר בלוגיקה הקיימת
+# (calculate_mrp_breakdown, compute_shared_executable_plan,
 # check_hierarchical_ctb נשארים בדיוק כפי שהם). היא רק *משתמשת* באותם
 # אבני-בניין שכבר קיימים ומאומתים (get_component_available_by_month,
 # ASSEMBLY_BOM_TREE / ASSEMBLY_CHILDREN) כדי לענות על שאלה שונה: "כמה
@@ -1981,7 +2027,74 @@ def check_hierarchical_ctb(asm_pn, requested_qty, target_ym, inv_cache=None, wip
 # הייצור המתוכננת בפועל" - כלומר קיבולת מקסימלית, לא "ניתן לייצור
 # מתוך התוכנית". החישוב הוא לכל הרכבה בנפרד (לא הקצאה משותפת בין
 # הרכבות מתחרות - ראו הסבר בטאב עצמו).
+#
+# סודר לשלוש פונקציות ברורות במקום פונקציה רקורסיבית אחת ארוכה, כדי
+# שיהיה ברור מה כל שלב עושה. האלגוריתם והתוצאה זהים לחלוטין לגרסה
+# הקודמת - זה ארגון מחדש של אותה לוגיקה, לא שינוי שלה.
+
+def _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cache):
+    """
+    שלב 1: כמה יחידות של asm_pn ניתן לבנות בהתבסס רק על רכיבי הגלם
+    הישירים שלו (עמודת ההרכבה ב-df הראשי) - לא כולל תתי-הרכבות.
+    מחזיר (מקסימום יחידות, הרכיב שהכי מגביל) - inf אם אין רכיבי גלם בכלל.
+    """
+    max_qty = float('inf')
+    limiting_component = None
+
+    if asm_pn not in df.columns:
+        return max_qty, limiting_component
+
+    for _, row in df.iterrows():
+        qty_per = safe_num(row[asm_pn])
+        if qty_per <= 0:
+            continue
+        comp_pn = str(row[PN_COL]).strip()
+        base_stock_check = safe_num(row[STOCK_COL])
+        if base_stock_check >= 9000000:
+            continue  # מק"ט של הרכבה אחרת - מטופל בשלב 2 (תתי-הרכבות), לא רכיב גלם אמיתי
+        avail = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
+        possible = avail / qty_per
+        if possible < max_qty:
+            max_qty = possible
+            limiting_component = comp_pn
+
+    return max_qty, limiting_component
+
+def _max_buildable_from_subassemblies(asm_pn, target_ym, inv_cache, wip_cache, visited):
+    """
+    שלב 2: כמה יחידות של asm_pn ניתן לבנות בהתבסס על תתי-ההרכבות שלו
+    (רקורסיבי, עד לעלי העץ) - "מה שכבר ב-WIP" של כל תת-הרכבה נספר
+    כזמין מיידית, ומעליו מתווספת הקיבולת הנוספת שתת-ההרכבה עצמה יכולה
+    לספק. מחזיר (מקסימום יחידות, תת-ההרכבה הכי מגבילה) - inf אם אין
+    תתי-הרכבות בכלל.
+    """
+    max_qty = float('inf')
+    limiting_component = None
+
+    for child_pn in ASSEMBLY_CHILDREN.get(asm_pn, []):
+        child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
+        qty_per_parent = child_info.get("qty_per_parent", 1.0)
+        if qty_per_parent <= 0:
+            continue
+
+        child_wip = wip_cache.get(child_pn, 0.0)
+        child_max_new, _ = compute_max_buildable(child_pn, target_ym, inv_cache, wip_cache, visited)
+        child_total_available = child_wip + child_max_new
+
+        possible_from_child = child_total_available / qty_per_parent
+        if possible_from_child < max_qty:
+            max_qty = possible_from_child
+            limiting_component = f"{child_pn} (תת-הרכבה)"
+
+    return max_qty, limiting_component
+
 def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _visited=None):
+    """
+    קיבולת ייצור מקסימלית תיאורטית של asm_pn עד (כולל, לא כולל)
+    target_ym - המינימום בין: (1) מה שרכיבי הגלם הישירים מאפשרים,
+    ו-(2) מה שתתי-ההרכבות מאפשרות (רקורסיבית). מחזיר (מקסימום יחידות,
+    שם הרכיב/תת-ההרכבה המגביל).
+    """
     if inv_cache is None:
         inv_cache = fetch_all_inventory_records()
     if wip_cache is None:
@@ -1992,36 +2105,13 @@ def compute_max_buildable(asm_pn, target_ym, inv_cache=None, wip_cache=None, _vi
         return float('inf'), None  # מגן מפני לולאה מעגלית בעץ ה-BOM (לא אמור לקרות)
     _visited = _visited | {asm_pn}
 
-    max_qty = float('inf')
-    limiting_component = None
+    direct_qty, direct_limiter = _max_buildable_from_direct_components(asm_pn, target_ym, inv_cache, wip_cache)
+    sub_qty, sub_limiter = _max_buildable_from_subassemblies(asm_pn, target_ym, inv_cache, wip_cache, _visited)
 
-    if asm_pn in df.columns:
-        for _, row in df.iterrows():
-            qty_per = safe_num(row[asm_pn])
-            if qty_per <= 0:
-                continue
-            comp_pn = str(row[PN_COL]).strip()
-            base_stock_check = safe_num(row[STOCK_COL])
-            if base_stock_check >= 9000000:
-                continue  # מק"ט של הרכבה אחרת - מטופל דרך תתי-ההרכבות למטה
-            avail = get_component_available_by_month(comp_pn, target_ym, inv_cache, wip_cache)
-            possible = avail / qty_per
-            if possible < max_qty:
-                max_qty = possible
-                limiting_component = comp_pn
-
-    for child_pn in ASSEMBLY_CHILDREN.get(asm_pn, []):
-        child_info = ASSEMBLY_BOM_TREE.get(child_pn, {})
-        qty_per_parent = child_info.get("qty_per_parent", 1.0)
-        if qty_per_parent <= 0:
-            continue
-        child_wip = wip_cache.get(child_pn, 0.0)
-        child_max_new, _ = compute_max_buildable(child_pn, target_ym, inv_cache, wip_cache, _visited)
-        child_total_available = child_wip + child_max_new
-        possible_from_child = child_total_available / qty_per_parent
-        if possible_from_child < max_qty:
-            max_qty = possible_from_child
-            limiting_component = f"{child_pn} (תת-הרכבה)"
+    if direct_qty <= sub_qty:
+        max_qty, limiting_component = direct_qty, direct_limiter
+    else:
+        max_qty, limiting_component = sub_qty, sub_limiter
 
     if max_qty == float('inf'):
         max_qty = 0.0
