@@ -996,7 +996,8 @@ def fetch_all_inventory_records():
                     "supplier": row.get("supplier", "אופק"),
                     "comment": row.get("comment", ""),
                     "updated_by": row.get("updated_by", ""),
-                    "updated_at": row.get("updated_at", "")
+                    "updated_at": row.get("updated_at", ""),
+                    "item_type": row.get("item_type", "") or ""
                 }
         return records
     except Exception:
@@ -1016,7 +1017,20 @@ def get_inventory_record(pn, cache=None):
             res["updated_at"]
         )
     return 0.0, "", "פתוח", "אופק", "", "", ""
-
+def get_effective_item_type(pn, original_type, cache=None):
+    # שיפור: מאפשר לערוך את "סוג פריט" (עמודה AS) ולשמור את השינוי ב-DB,
+    # מבלי לגעת בקובץ המקור מ-GitHub. אם קיימת ב-DB דריסה ידנית (item_type)
+    # לאותו מק"ט - היא זו שתוצג ותשמש לכל החישובים/סינונים. אם אין דריסה,
+    # ממשיכים להשתמש בערך המקורי מעמודה AS בקובץ, בדיוק כמו קודם.
+    all_recs = cache if cache is not None else fetch_all_inventory_records()
+    res = all_recs.get(str(pn).strip())
+    if res:
+        override = res.get("item_type", "")
+        if override and str(override).strip() not in ["", "None", "nan"]:
+            return str(override)
+    return original_type
+    
+        
 @st.cache_data(ttl=60)
 def fetch_wip_records():
     try:
@@ -1051,8 +1065,17 @@ def delete_wip_record(assembly_pn):
     except Exception as e:
         st.error(f"שגיאה במחיקת WIP מ-Supabase: {e}")
 
-def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url=""):
+def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updated_by, webhook_url="", item_type=None):
+    # שיפור: פרמטר item_type אופציונלי (ברירת מחדל None) כדי לא לשבור אף
+    # קריאה קיימת לפונקציה הזו. כשלא מועבר item_type מפורש (למשל בשמירת
+    # ETA/מלאי/סטטוס רגילה), שומרים על ערך "סוג פריט" הקיים כרגע ב-DB
+    # לאותו מק"ט, כדי לא למחוק אותו בטעות.
     now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
+    if item_type is None:
+        existing_rec = fetch_all_inventory_records().get(str(pn).strip(), {})
+        item_type_val = existing_rec.get("item_type", "")
+    else:
+        item_type_val = item_type
     payload = {
         "pn": str(pn),
         "added_stock": float(added_stock),
@@ -1061,7 +1084,8 @@ def save_inventory_record(pn, added_stock, eta, status, supplier, comment, updat
         "supplier": str(supplier),
         "comment": str(comment),
         "updated_by": str(updated_by),
-        "updated_at": now_str
+        "updated_at": now_str,
+        "item_type": str(item_type_val)
     }
     try:
         supabase.table("mrp_inventory_updates").upsert(payload, on_conflict="pn").execute()
@@ -1543,6 +1567,12 @@ selected_assembly = st.sidebar.selectbox(
 )
 
 item_types = df[ITEM_TYPE_COL].dropna().unique().tolist() if ITEM_TYPE_COL in df.columns else []
+_override_item_types = set(
+    str(v.get("item_type", "")).strip()
+    for v in fetch_all_inventory_records().values()
+    if str(v.get("item_type", "")).strip()
+)
+item_types = sorted(set(item_types) | _override_item_types)
 selected_item_type = st.sidebar.selectbox("בחר סוג פריט (עמודה AS)", ["הכל"] + item_types, key="selected_item_type")
 
 item_choices = ["הכל"] + sorted([f"{str(r[PN_COL]).strip()} - {str(r[DESC_COL])}" for _, r in df.iterrows() if pd.notnull(r[PN_COL])])
@@ -1705,7 +1735,8 @@ def calculate_mrp_breakdown_cached(target_yms_tuple, sim_extra_stock_items_tuple
     for idx, row in mrp_shortages.iterrows():
         pn = str(row[PN_COL]).strip()
         desc = str(row[DESC_COL])
-        item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
+        original_item_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in temp_df.columns else ""
+        item_type = get_effective_item_type(pn, original_item_type, inv_cache)
 
         if reference_ym:
             # תיקון קריטי: כולל עכשיו גם ניכוי מלאי שכבר "נתפס" ע"י WIP קיים
@@ -2630,7 +2661,8 @@ elif nav_page == "📅 מעקב ETA ודחיות":
         if not p_num or p_num == 'nan':
             continue
         p_desc = str(row[DESC_COL])
-        p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+        original_p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+        p_type = get_effective_item_type(p_num, original_p_type, inv_cache_all)
 
         orig_eta = get_base_mrp_eta(p_num)
         orig_qty = get_base_mrp_qty(p_num)
@@ -2883,7 +2915,8 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
         if bulk_only_shortage and p_num not in shortage_pns:
             continue
         p_desc = str(row[DESC_COL])
-        p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+        original_p_type = str(row[ITEM_TYPE_COL]) if ITEM_TYPE_COL in df.columns else ""
+        p_type = get_effective_item_type(p_num, original_p_type, inv_cache_bulk)
         if bulk_item_type != "הכל" and p_type != bulk_item_type:
             continue
         if bulk_search and bulk_search.strip():
@@ -2925,12 +2958,13 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
             use_container_width=True,
             height=520,
             hide_index=True,
-            disabled=["מק\"ט", "תיאור פריט", "סוג פריט", "ETA מקורי (MRP)", "כמות מקורית (MRP)"],
+            disabled=["מק\"ט", "תיאור פריט", "ETA מקורי (MRP)", "כמות מקורית (MRP)"],
             column_config={
                 "ETA מעודכן": st.column_config.DateColumn("ETA מעודכן", format="YYYY-MM-DD"),
                 "תוספת מלאי": st.column_config.NumberColumn("תוספת מלאי", min_value=0.0, step=1.0),
                 "סטטוס": st.column_config.SelectboxColumn("סטטוס", options=["פתוח", "הוזמן", "בייצור", "בדרך", "התקבל", "חסום"]),
                 "ספק": st.column_config.SelectboxColumn("ספק", options=supplier_options),
+                "סוג פריט": st.column_config.SelectboxColumn("סוג פריט", options=item_types),
             }
         )
 
@@ -2946,7 +2980,8 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
                     float(orig_row["תוספת מלאי"]) != new_stock_val or
                     orig_row["סטטוס"] != new_row["סטטוס"] or
                     orig_row["ספק"] != new_row["ספק"] or
-                    orig_row["הערות"] != new_row["הערות"]
+                    orig_row["הערות"] != new_row["הערות"] or
+                    orig_row["סוג פריט"] != new_row["סוג פריט"]
                 )
                 if changed:
                     save_inventory_record(
@@ -2957,10 +2992,10 @@ elif nav_page == "✏️ עריכת ETA מרוכזת":
                         supplier=new_row["ספק"],
                         comment=new_row["הערות"],
                         updated_by="Bulk ETA Editor",
-                        webhook_url=webhook_url
+                        webhook_url=webhook_url,
+                        item_type=new_row["סוג פריט"]
                     )
                     changed_count += 1
-
             if changed_count > 0:
                 st.success(f"נשמרו {changed_count} שינויים ל-DB. כל החישובים בכל הטאבים יתעדכנו בהתאם.")
                 st.rerun()
