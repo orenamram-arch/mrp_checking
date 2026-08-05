@@ -727,7 +727,7 @@ st.set_page_config(
 # secrets.toml (או בהגדרות Secrets ב-Streamlit Cloud):
 #   [passwords]
 #   oren = "הסיסמה-שלך-כאן"
-#   manager2 = "סיסמה-אחרת"
+#   yossi = "סיסמה-אחרת"
 def check_password():
     def password_entered():
         if st.secrets["passwords"].get(st.session_state["username"]) == st.session_state["password"]:
